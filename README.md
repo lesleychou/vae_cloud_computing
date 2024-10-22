@@ -9,6 +9,7 @@ To create a suitable environment:
 - `conda activate prvtel_env`
 - `pip install -r requirements.txt`
 - `pip uninstall rdt` (SDV installs rdt by default however we have included an added fix so this needs to be uninstalled to avoid conflicts)
+- `pip install jupyter` (install jupyter notebook for evaluation)
 
 #### GPU Support
 

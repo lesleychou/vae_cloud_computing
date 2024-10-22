@@ -13,7 +13,7 @@ class Config():
         self.batch_size = 1000
         self.latent_dim = 12
         self.hidden_dim = 512
-        self.n_epochs = 2
+        self.n_epochs = 10
         self.logging_freq = 1  # Number of epochs we should log the results to the user
         self.patience = 50  # How many epochs should we allow the model train to see if
         # improvement is made
