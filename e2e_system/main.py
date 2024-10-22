@@ -6,6 +6,7 @@ import math
 import seaborn as sns  
 import matplotlib.pyplot as plt
 from config import Config
+import os
 
 # VAE is in other folder as well as opacus adapted library
 import sys
@@ -31,7 +32,7 @@ from utils import (
 import warnings
 warnings.filterwarnings("ignore")
 
-def read_data(input_data_filepath, output_data_path):
+def read_data(input_data_filepath, output_data_path):    
     # load data to pandas dataframe
     input_df = pd.read_csv(input_data_filepath)
 
@@ -159,6 +160,12 @@ def generate_diff_size(config, vae_model, X_train, input_df,
     return train_synthetic_supp
 
 def main(config):
+    # if config.output_processed_data_path does not exist, create the directory
+    if not os.path.exists(config.output_processed_data_save_dir):
+        os.makedirs(config.output_processed_data_save_dir)
+    if not os.path.exists(config.syn_data_save_dir):
+        os.makedirs(config.syn_data_save_dir)
+
     train_df, original_continuous_columns, original_categorical_columns = read_data(input_data_filepath=config.input_data_path,
                                                                                     output_data_path=config.output_processed_data_path)
     print("Continuous columns: ", original_continuous_columns)
@@ -189,7 +196,7 @@ def main(config):
 
     syn_generated_data = generate_diff_size(config, load_vae, X_train, train_df,
                                             reordered_dataframe_columns, continuous_transformers, categorical_transformers, size=None)
-    syn_generated_data.to_csv(config.output_syn_data_path, index=False)
+    syn_generated_data.to_csv(config.syn_data_path, index=False)
 
     # all_sizes = [10, 100, 1000, 5000, 10000, X_train.shape[0]]
     #

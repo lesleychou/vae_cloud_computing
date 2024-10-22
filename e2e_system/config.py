@@ -28,8 +28,12 @@ class Config():
         self.target_delta = 1e-5  # Target delta for privacy accountant
 
         self.input_data_path = "data/all_data/cisco_data/network_traffic.csv"
-        self.output_processed_data_path = "data/all_data/vae_data_processed/network_traffic.csv"
-        self.output_syn_data_path = "syn_data/network_traffic.csv"
+
+        self.output_processed_data_save_dir = "data/all_data/vae_data_processed/"
+        self.output_processed_data_path = os.path.join(self.output_processed_data_save_dir, 'network_traffic.csv')
+
+        self.syn_data_save_dir = "syn_data/"
+        self.syn_data_path = os.path.join(self.syn_data_save_dir, 'network_traffic.csv')
 
         self.model_save_dir = os.path.join(self.project_dir, 'saved_model/')    # Where to save the best model
         self.filepath = os.path.join(self.model_save_dir, 'cisco_network_traffic_vae.pth')
