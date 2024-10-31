@@ -29,34 +29,12 @@ from utils import (
     plot_variable_distributions,
     reverse_transformers,
 )
+
+# GPU stuff.
+from gputils.preproc import nvt_read_data
+
 import warnings
 warnings.filterwarnings("ignore")
-
-def read_data(input_data_filepath, output_data_path):    
-    # load data to pandas dataframe
-    input_df = pd.read_csv(input_data_filepath)
-
-    # remove the column "time" if it exists
-    if 'time' in input_df.columns:
-        input_df = input_df.drop(columns=['time'])
-
-    # Find all column/features with categorical value
-    original_categorical_columns = []
-    categorical_len_count = 0
-    for col in input_df:
-        # Do not process the value
-        if len(input_df[col].unique()) <= 10:
-            original_categorical_columns.append(col)
-            categorical_len_count += len(input_df[col].unique())
-
-    original_continuous_columns = list(set(input_df.columns.values.tolist()) - set(original_categorical_columns))
-    # # scale all continuous value with int log
-    # for column in original_continuous_columns:
-    #     input_df[column] = np.log1p(input_df[column])
-    # input_df = input_df.round(0)
-    input_df.to_csv(output_data_path, index=False)
-
-    return input_df, original_continuous_columns, original_categorical_columns
 
 
 def train(config, X_train, num_continuous, num_categories):
@@ -166,13 +144,15 @@ def main(config):
     if not os.path.exists(config.syn_data_save_dir):
         os.makedirs(config.syn_data_save_dir)
 
-    train_df, original_continuous_columns, original_categorical_columns = read_data(input_data_filepath=config.input_data_path,
-                                                                                    output_data_path=config.output_processed_data_path)
+    # TODO: Make this function accept glob of file paths.
+    train_df, original_continuous_columns, original_categorical_columns = nvt_read_data(input_file_paths=[config.input_data_path],
+                                                                                    output_file_path=config.output_processed_data_path)
     print("Continuous columns: ", original_continuous_columns)
     print("Categorical columns: ", original_categorical_columns)
 
     pre_proc_method = "GMM"
 
+    # TODO: Rework this part to work on GPU (at least with basic data preprocessing).
     (
         original_input_transformed,
         original_input_original,
@@ -186,6 +166,7 @@ def main(config):
                        original_categorical_columns,
                        pre_proc_method=pre_proc_method)
 
+    # Not sure we can print shape here if the data is huge
     X_train = original_input_transformed
     print("Input data shape: ", X_train.shape)
 
@@ -194,6 +175,9 @@ def main(config):
     load_vae = VAE(encoder, decoder)
     load_vae.load_state_dict(torch.load(config.filepath))
 
+    # TODO: Figure out how to take generated data and
+    # 1. Return it to original format.
+    # 2. Write it to disk (idk if we want to do many files or one big file).
     syn_generated_data = generate_diff_size(config, load_vae, X_train, train_df,
                                             reordered_dataframe_columns, continuous_transformers, categorical_transformers, size=None)
     syn_generated_data.to_csv(config.syn_data_path, index=False)
