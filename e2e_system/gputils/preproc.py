@@ -1,13 +1,13 @@
-import tqdm
+from tqdm import tqdm
 import torch
-import nvtabular as nvt
-import merlin
-from merlin.schema import Tags
-from nvtabular.loader.torch import TorchAsyncItr, DLDataLoader
+# import nvtabular as nvt
+# import merlin
+# from merlin.schema import Tags
+# from nvtabular.loader.torch import TorchAsyncItr, DLDataLoader
 import dask.dataframe as dd
 import cudf
 import dask_cudf
-from merlin.core.compat import HAS_GPU, cudf, dask_cudf, device_mem_size
+# from merlin.core.compat import HAS_GPU, cudf, dask_cudf, device_mem_size
 
 
 def _collate(batch):
@@ -19,26 +19,26 @@ def _collate(batch):
     label_tensor = labels
     return feature_tensor, label_tensor
 
-def create_loader(
-        transformed_ds,
-        continuous_columns,
-        categorical_columns,
-        label_columns,
-        batch_size=32
-):
-    """
-    Takes NVT dataset returns a PyTorch Dataloader. This should be used
-    after all preprocessing has already been done.
-    """
-    nvt_iter = TorchAsyncItr(
-        transformed_ds,
-        cats=categorical_columns,
-        conts=continuous_columns,
-        labels=label_columns,
-        batch_size=batch_size
-    )
-    loader = DLDataLoader(nvt_iter, collate_fn=_collate)
-    return loader
+# def create_loader(
+#         transformed_ds,
+#         continuous_columns,
+#         categorical_columns,
+#         label_columns,
+#         batch_size=32
+# ):
+#     """
+#     Takes NVT dataset returns a PyTorch Dataloader. This should be used
+#     after all preprocessing has already been done.
+#     """
+#     nvt_iter = TorchAsyncItr(
+#         transformed_ds,
+#         cats=categorical_columns,
+#         conts=continuous_columns,
+#         labels=label_columns,
+#         batch_size=batch_size
+#     )
+#     loader = DLDataLoader(nvt_iter, collate_fn=_collate)
+#     return loader
 
 
 def nvt_read_data(
@@ -51,10 +51,14 @@ def nvt_read_data(
     Takes a list of csv file names and reads them into a dataset.
     """
     # Getting the ddf (Dask Dataframe) to compute statistics.
-    ddf = nvt.Dataset(input_file_paths, **kwargs).to_ddf()
+    blocksize = int(1e+9)
+    ddf = dask_cudf.read_csv(
+        input_file_paths,
+        blocksize=blocksize
+    )
 
     # Drop any unwanted columns.
-    ddf = ddf.drop(excluded_cols).compute()
+    ddf = ddf.drop(columns=excluded_cols)
 
     original_continuous_columns = []
     original_categorical_columns = []
@@ -62,7 +66,7 @@ def nvt_read_data(
     categorical_len_count = 0
     # Preprocessing (mirrors vanilla read_data method).
     columns = list(ddf.columns)
-    for col in tqdm.tqdm(columns):
+    for col in tqdm(columns):
         # Do not process the value
         n_uniques = ddf[col].unique().compute()
         num_cats = len(n_uniques)
@@ -74,6 +78,5 @@ def nvt_read_data(
 
     # Should we write to disk like in the original? Idk if we have the
     # disk space for that. Maybe we make that optional.
-    ds = nvt.Dataset(ddf)
 
-    return ds, original_continuous_columns, original_categorical_columns
+    return ddf, original_continuous_columns, original_categorical_columns

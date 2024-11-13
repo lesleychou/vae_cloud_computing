@@ -152,6 +152,10 @@ def main(config):
 
     pre_proc_method = "GMM"
 
+    print(train_df.head())
+
+    return
+
     # TODO: Rework this part to work on GPU (at least with basic data preprocessing).
     (
         original_input_transformed,
