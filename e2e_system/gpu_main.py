@@ -31,7 +31,8 @@ from utils import (
 )
 
 # GPU stuff.
-from gputils.preproc import nvt_read_data
+from gputils.preproc import nvt_read_data, gpu_preproc
+from dask.distributed import Client
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -138,6 +139,7 @@ def generate_diff_size(config, vae_model, X_train, input_df,
     return train_synthetic_supp
 
 def main(config):
+    client = Client()
     # if config.output_processed_data_path does not exist, create the directory
     if not os.path.exists(config.output_processed_data_save_dir):
         os.makedirs(config.output_processed_data_save_dir)
@@ -150,27 +152,29 @@ def main(config):
     print("Continuous columns: ", original_continuous_columns)
     print("Categorical columns: ", original_categorical_columns)
 
-    pre_proc_method = "GMM"
+    pre_proc_method = "standard"
 
     print(train_df.head())
 
-    return
 
     # TODO: Rework this part to work on GPU (at least with basic data preprocessing).
-    (
-        original_input_transformed,
-        original_input_original,
-        reordered_dataframe_columns,
-        continuous_transformers,
-        categorical_transformers,
-        num_categories,
-        num_continuous,
-    ) = mimic_pre_proc(train_df,
+    # (
+    #     original_input_transformed,
+    #     original_input_original,
+    #     reordered_dataframe_columns,
+    #     continuous_transformers,
+    #     categorical_transformers,
+    #     num_categories,
+    #     num_continuous,
+    # ) = 
+    gpu_preproc(train_df,
                        original_continuous_columns,
                        original_categorical_columns,
                        pre_proc_method=pre_proc_method)
 
     # Not sure we can print shape here if the data is huge
+
+    return
     X_train = original_input_transformed
     print("Input data shape: ", X_train.shape)
 
