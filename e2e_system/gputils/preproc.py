@@ -90,7 +90,8 @@ def gpu_preproc(
         data_supp: dask_cudf.DataFrame,
         original_continuous_columns,
         original_categorical_columns,
-        pre_proc_method="standard"
+        pre_proc_method='standard',
+        output_dtype='float32'
 ):
     # Specify column configurations
     # original_categorical_columns = [
@@ -110,8 +111,7 @@ def gpu_preproc(
 
     transformed_dataset = data_supp
 
-
-    # Convert categoricals (assumed to be numeric) to dtype int.
+    # Convert categoricals (assumed to be numeric) to dtype int. Is this to avoid floating pt error?
     categorical_part = transformed_dataset[categorical_columns].astype(int)
     num_categories = categorical_part.nunique().compute()
     num_categories = list(num_categories.values)
@@ -129,55 +129,36 @@ def gpu_preproc(
         temp_columns = transformed_dataset[continuous_columns]
         temp_continuous.fit(temp_columns)
         temp_columns = temp_columns.map_partitions(temp_continuous.transform)
-        continuous_transformers["continuous_"] = temp_continuous
+        continuous_transformers["standard"] = temp_continuous
         transformed_dataset[continuous_columns] = temp_columns
         # for col, temp_col in zip(continuous_columns, temp_columns.columns):
         #     transformed_dataset[col] = temp_columns[temp_col]
 
-        print(transformed_dataset.head())
-
     num_continuous = len(continuous_columns)
 
-    temp_categorical = OneHotEncoder()
+    # Make one hot columns out of categorical features.
+    temp_categorical = OneHotEncoder(sparse_output=False)
     temp_columns = transformed_dataset[categorical_columns]
     transformed_cols = temp_categorical.fit_transform(temp_columns)
-    categorical_transformers[
-            "categorical_"
-    ] = temp_categorical
-
-    print(num_categories)
+    categorical_transformers["one_hot"] = temp_categorical
 
     # Get names for one hot categorical features.
-    one_hot_names = list(temp_categorical.get_feature_names())
-    print(one_hot_names)
-    print(transformed_cols)
+    one_hot_names = list(temp_categorical.get_feature_names(categorical_columns))
 
-    # Add one hot features.
+    # Move one hot features to DataFrame so we can reorder with continuous features.
     transformed_cols.compute_chunk_sizes()
-    temp_ddf = transformed_cols.to_dask_dataframe()
-
-    transformed_dataset[one_hot_names] = temp_ddf
-
-    print(transformed_dataset.head())
+    cat_ddf = transformed_cols.to_dask_dataframe(columns=one_hot_names)
 
 
     # We need the dataframe in the correct format i.e. categorical variables first and in the order of
-    # num_categories with continuous variables placed after
+    # num_categories with continuous variables placed after. Need to specify divisions so that concat will work.
 
-    return
-
-    reordered_dataframe = transformed_dataset.iloc[:, num_continuous:]
-
-    reordered_dataframe = pd.concat(
-        [reordered_dataframe, transformed_dataset.iloc[:, :num_continuous]],
-        axis=1,
-    )
-
-    x_train_df = reordered_dataframe.astype('float32')
+    cont_ddf = transformed_dataset[continuous_columns].set_index(cat_ddf.index, divisions=cat_ddf.divisions)
+    reordered_ddf = dask_cudf.concat([cat_ddf, cont_ddf], axis=1).astype(output_dtype)
 
     return (
-        x_train_df,
-        reordered_dataframe.columns,
+        reordered_ddf,
+        reordered_ddf.columns,
         continuous_transformers,
         categorical_transformers,
         num_categories,

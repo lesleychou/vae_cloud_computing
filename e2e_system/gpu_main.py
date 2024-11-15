@@ -147,14 +147,15 @@ def main(config):
         os.makedirs(config.syn_data_save_dir)
 
     # TODO: Make this function accept glob of file paths.
-    train_df, original_continuous_columns, original_categorical_columns = nvt_read_data(input_file_paths=[config.input_data_path],
+    train_df, original_continuous_columns, original_categorical_columns = nvt_read_data(input_file_paths=[config.input_data_path for _ in range(1)],
                                                                                     output_file_path=config.output_processed_data_path)
     print("Continuous columns: ", original_continuous_columns)
     print("Categorical columns: ", original_categorical_columns)
 
     pre_proc_method = "standard"
 
-    print(train_df.head())
+    print(train_df)
+    print(train_df.divisions)
 
 
     # TODO: Rework this part to work on GPU (at least with basic data preprocessing).
