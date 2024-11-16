@@ -159,25 +159,26 @@ def main(config):
 
 
     # TODO: Rework this part to work on GPU (at least with basic data preprocessing).
-    # (
-    #     original_input_transformed,
-    #     original_input_original,
-    #     reordered_dataframe_columns,
-    #     continuous_transformers,
-    #     categorical_transformers,
-    #     num_categories,
-    #     num_continuous,
-    # ) = 
-    gpu_preproc(train_df,
+    (
+        original_input_transformed,
+        original_input_original,
+        reordered_dataframe_columns,
+        continuous_transformers,
+        categorical_transformers,
+        num_categories,
+        num_continuous,
+    ) = gpu_preproc(train_df,
                        original_continuous_columns,
                        original_categorical_columns,
                        pre_proc_method=pre_proc_method)
 
     # Not sure we can print shape here if the data is huge
 
-    return
+    
     X_train = original_input_transformed
     print("Input data shape: ", X_train.shape)
+
+    return
 
     vae, encoder, decoder = train(config, X_train, num_continuous, num_categories)
 

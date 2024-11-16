@@ -1,0 +1,101 @@
+import dask_cudf
+import dask.dataframe as dd
+import cudf
+import torch
+import queue
+
+
+class DataFrameIter:
+    """Ripped straight from core.merlin.io. Iterates through partitions of dask DataFrame."""
+    
+    def __init__(self, ddf, columns=None, indices=None, partition_lens=None):
+        self.indices = indices if isinstance(indices, list) else range(ddf.npartitions)
+        self.ddf = ddf
+        self.columns = columns
+        self.partition_lens = partition_lens
+
+    def __len__(self):
+        if self.partition_lens:
+            # Use metadata-based partition-size information
+            # if/when it is available.  Note that this metadata
+            # will not be correct if rows where added or dropped
+            # after IO (within Ops).
+            return sum(self.partition_lens[i] for i in self.indices)
+        if len(self.indices) < self._ddf.npartitions:
+            return len(self._ddf.partitions[self.indices])
+        return len(self._ddf) * self.epochs
+
+    def __iter__(self):
+        for i in self.indices:
+            part = self._ddf.get_partition(i)
+            if self.columns:
+                yield part[self.columns].compute(scheduler="synchronous")
+            else:
+                yield part.compute(scheduler="synchronous")
+        # Is this here to make sure part gets GC'd?
+        part = None
+
+
+class SequentialBatcher:
+    """Makes batches of PyTorch tensors (GPU) out of dask_cudf.DataFrame partitions."""
+
+    def __init__(
+        self,
+        ddf,
+        batch_size=64,
+        shuffle=False,
+        dtype=None
+    ):
+        self.data = DataFrameIter(ddf)
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        # Default should be float32.
+        self.dtype = dtype if dtype else torch.get_default_dtype()
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def __len__(self):
+        if self.partition_lens:
+            # Use metadata-based partition-size information
+            # if/when it is available.  Note that this metadata
+            # will not be correct if rows where added or dropped
+            # after IO (within Ops).
+            return sum(self.partition_lens[i] for i in self.indices)
+        if len(self.indices) < self._ddf.npartitions:
+            return len(self._ddf.partitions[self.indices])
+        return len(self._ddf) * self.epochs
+
+    def __iter__(self):
+        batch_iterator = self.get_batches()
+        for batch_group in batch_iterator:
+            for batch in batch_group:
+                yield batch
+
+    def get_batches(self):
+        """A generator that turns each cuDF partition into a list of torch.Tensor batches."""
+        spill: torch.Tensor = None
+        for chunk in self.data:
+            chunk_tensor = self.cudf_to_tensor(chunk)
+            if spill is not None and spill.numel() > 0:
+                chunk_tensor = torch.concat([spill, chunk_tensor])
+            batches, spill = self.batch_tensors(chunk_tensor)
+            yield batches
+        if spill is not None:
+            # Only the batches comes as a list.
+            yield [spill]
+
+
+    def cudf_to_tensor(self, chunk):
+        df_arr = chunk.values
+        tensor = torch.as_tensor(df_arr, device=self.device, dtype=self.dtype)
+        return tensor
+    
+    def batch_tensors(self, chunk_tensor):
+        """Splits larger tensor into list of batches. Creates some spill."""
+        batches = list(torch.split(chunk_tensor, split_size_or_sections=self.batch_size))
+        spill = None
+        if len(batches) > 0:
+            if batches[-1].shape[0] < self.batch_size:
+                spill = batches[-1]
+                batches = batches[:-1]
+        return batches, spill
