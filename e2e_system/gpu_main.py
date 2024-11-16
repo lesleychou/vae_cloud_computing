@@ -32,6 +32,7 @@ from utils import (
 
 # GPU stuff.
 from gputils.preproc import nvt_read_data, gpu_preproc
+from gputils.dataloaders import SequentialBatcher
 from dask.distributed import Client
 
 import warnings
@@ -41,18 +42,14 @@ warnings.filterwarnings("ignore")
 def train(config, X_train, num_continuous, num_categories):
 
     # Prepare data for interaction with torch VAE
-    Y = torch.Tensor(X_train)
-    dataset = TensorDataset(Y)
+    Y = SequentialBatcher(X_train, batch_size=config.batch_size)
+    dataset = Y
 
-    generator = None
-    sample_rate = config.batch_size / len(dataset)
+    # TODO: Maybe I implement UniformWithReplacement sampling later? Idk 
+    # how important that is.
     data_loader = DataLoader(
         dataset,
-        batch_sampler=UniformWithReplacementSampler(num_samples=len(dataset),
-                                                    sample_rate=sample_rate,
-                                                    generator=generator),
-        pin_memory=True,
-        generator=generator,
+        batch_size=None
     )
 
     # Create VAE
@@ -154,14 +151,10 @@ def main(config):
 
     pre_proc_method = "standard"
 
-    print(train_df)
-    print(train_df.divisions)
-
 
     # TODO: Rework this part to work on GPU (at least with basic data preprocessing).
     (
         original_input_transformed,
-        original_input_original,
         reordered_dataframe_columns,
         continuous_transformers,
         categorical_transformers,
@@ -176,14 +169,15 @@ def main(config):
 
     
     X_train = original_input_transformed
-    print("Input data shape: ", X_train.shape)
-
-    return
+    print(X_train.columns)
+    print("Input data shape: ", X_train.shape[1])
 
     vae, encoder, decoder = train(config, X_train, num_continuous, num_categories)
 
     load_vae = VAE(encoder, decoder)
     load_vae.load_state_dict(torch.load(config.filepath))
+
+    return
 
     # TODO: Figure out how to take generated data and
     # 1. Return it to original format.

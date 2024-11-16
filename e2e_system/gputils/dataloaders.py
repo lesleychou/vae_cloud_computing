@@ -3,6 +3,7 @@ import dask.dataframe as dd
 import cudf
 import torch
 import queue
+import math
 
 
 class DataFrameIter:
@@ -13,21 +14,29 @@ class DataFrameIter:
         self.ddf = ddf
         self.columns = columns
         self.partition_lens = partition_lens
+        self.length = None
 
     def __len__(self):
+        """Caches length computation. Assumes that underlying dataframe won't change."""
+        if self.length:
+            return self.length
+        
         if self.partition_lens:
             # Use metadata-based partition-size information
             # if/when it is available.  Note that this metadata
             # will not be correct if rows where added or dropped
             # after IO (within Ops).
+            self.length = sum(self.partition_lens[i] for i in self.indices)
             return sum(self.partition_lens[i] for i in self.indices)
-        if len(self.indices) < self._ddf.npartitions:
-            return len(self._ddf.partitions[self.indices])
-        return len(self._ddf) * self.epochs
+        if len(self.indices) < self.ddf.npartitions:
+            return len(self.ddf.partitions[self.indices])
+        
+        self.length = len(self.ddf)
+        return self.length
 
     def __iter__(self):
         for i in self.indices:
-            part = self._ddf.get_partition(i)
+            part = self.ddf.get_partition(i)
             if self.columns:
                 yield part[self.columns].compute(scheduler="synchronous")
             else:
@@ -36,7 +45,7 @@ class DataFrameIter:
         part = None
 
 
-class SequentialBatcher:
+class SequentialBatcher(torch.utils.data.IterableDataset):
     """Makes batches of PyTorch tensors (GPU) out of dask_cudf.DataFrame partitions."""
 
     def __init__(
@@ -55,21 +64,15 @@ class SequentialBatcher:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def __len__(self):
-        if self.partition_lens:
-            # Use metadata-based partition-size information
-            # if/when it is available.  Note that this metadata
-            # will not be correct if rows where added or dropped
-            # after IO (within Ops).
-            return sum(self.partition_lens[i] for i in self.indices)
-        if len(self.indices) < self._ddf.npartitions:
-            return len(self._ddf.partitions[self.indices])
-        return len(self._ddf) * self.epochs
+        num_batches = math.ceil(len(self.data) / self.batch_size)
+        return num_batches
 
     def __iter__(self):
         batch_iterator = self.get_batches()
         for batch_group in batch_iterator:
             for batch in batch_group:
-                yield batch
+                # Need to put in iterable/tuple because vae.train() unpacks output of data loader.
+                yield (batch,)
 
     def get_batches(self):
         """A generator that turns each cuDF partition into a list of torch.Tensor batches."""
@@ -80,8 +83,8 @@ class SequentialBatcher:
                 chunk_tensor = torch.concat([spill, chunk_tensor])
             batches, spill = self.batch_tensors(chunk_tensor)
             yield batches
+        # Emit spillover.
         if spill is not None:
-            # Only the batches comes as a list.
             yield [spill]
 
 
