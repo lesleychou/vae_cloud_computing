@@ -118,42 +118,48 @@ def gpu_preproc(
 
     if pre_proc_method == "standard":
         # Fit cuML standard scaler to all continuous columns.
-        print(transformed_dataset.head())
         # This wrapper repeatedly calls partial_fit() on chunks. It requires a scoring function
         # so just pass it a dummy function.
-        temp_continuous = Incremental(
+        standardizer = Incremental(
             StandardScaler(),
             shuffle_blocks=False,
             scoring=lambda y1, y2: 0
         )
         temp_columns = transformed_dataset[continuous_columns]
-        temp_continuous.fit(temp_columns)
-        temp_columns = temp_columns.map_partitions(temp_continuous.transform)
-        continuous_transformers["standard"] = temp_continuous
-        transformed_dataset[continuous_columns] = temp_columns
+        standardizer.fit(temp_columns)
+        cont_ddf = temp_columns.map_partitions(standardizer.transform)
+        continuous_transformers["standard"] = standardizer
+        # transformed_dataset[continuous_columns] = cont_ddf
+        cont_ddf.columns = continuous_columns
         # for col, temp_col in zip(continuous_columns, temp_columns.columns):
         #     transformed_dataset[col] = temp_columns[temp_col]
+
+
+        print(temp_columns)
 
     num_continuous = len(continuous_columns)
 
     # Make one hot columns out of categorical features.
-    temp_categorical = OneHotEncoder(sparse_output=False)
+    one_hot_encoder = OneHotEncoder(sparse_output=False)
     temp_columns = transformed_dataset[categorical_columns]
-    transformed_cols = temp_categorical.fit_transform(temp_columns)
-    categorical_transformers["one_hot"] = temp_categorical
+    one_hot_arr = one_hot_encoder.fit_transform(temp_columns)
+    categorical_transformers["one_hot"] = one_hot_encoder
 
     # Get names for one hot categorical features.
-    one_hot_names = list(temp_categorical.get_feature_names(categorical_columns))
+    one_hot_names = list(one_hot_encoder.get_feature_names(categorical_columns))
 
     # Move one hot features to DataFrame so we can reorder with continuous features.
-    transformed_cols.compute_chunk_sizes()
-    cat_ddf = transformed_cols.to_dask_dataframe(columns=one_hot_names)
+    one_hot_arr.compute_chunk_sizes()
+    cat_ddf = one_hot_arr.to_dask_dataframe(columns=one_hot_names)
 
 
     # We need the dataframe in the correct format i.e. categorical variables first and in the order of
     # num_categories with continuous variables placed after. Need to specify divisions so that concat will work.
 
-    cont_ddf = transformed_dataset[continuous_columns].set_index(cat_ddf.index, divisions=cat_ddf.divisions)
+    # Apparently referencing a slice doesn't quite acquire the whole computation graph 
+    # associated with the underlying data, and you have to ref the transformed data itself.
+
+    cont_ddf = cont_ddf.set_index(cat_ddf.index, divisions=cat_ddf.divisions)
     reordered_ddf = dask_cudf.concat([cat_ddf, cont_ddf], axis=1).astype(output_dtype)
 
     return (
