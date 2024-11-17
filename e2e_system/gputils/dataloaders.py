@@ -28,6 +28,7 @@ class DataFrameIter:
             # after IO (within Ops).
             self.length = sum(self.partition_lens[i] for i in self.indices)
             return sum(self.partition_lens[i] for i in self.indices)
+        # Computing length manually.
         if len(self.indices) < self.ddf.npartitions:
             return len(self.ddf.partitions[self.indices])
         
@@ -35,14 +36,31 @@ class DataFrameIter:
         return self.length
 
     def __iter__(self):
+        # Compute length and partition lengths while iterating.
+        part_lens = [0] * self.ddf.npartitions
+        length = 0
         for i in self.indices:
-            part = self.ddf.get_partition(i)
+            part = self.ddf.partitions[i]
             if self.columns:
-                yield part[self.columns].compute(scheduler="synchronous")
+                result = part[self.columns].compute(scheduler="synchronous")
             else:
-                yield part.compute(scheduler="synchronous")
+                result = part.compute(scheduler="synchronous")
+
+            part_lens[i] = len(result)
+            length += part_lens[i]
+
+            yield result
+        self.partition_lens = part_lens
+        self.length = length
         # Is this here to make sure part gets GC'd?
         part = None
+
+    def __getitem__(self, idx):
+        part = self.ddf.get_partition(idx)
+        if self.columns:
+            return part[self.columns].compute(scheduler="synchronous")
+        else:
+            return part.compute(scheduler="synchronous")
 
 
 class SequentialBatcher(torch.utils.data.IterableDataset):
@@ -55,6 +73,7 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         shuffle=False,
         dtype=None
     ):
+        self.ddf = ddf
         self.data = DataFrameIter(ddf)
         self.batch_size = batch_size
         self.shuffle = shuffle
@@ -82,7 +101,8 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
             if spill is not None and spill.numel() > 0:
                 chunk_tensor = torch.concat([spill, chunk_tensor])
             batches, spill = self.batch_tensors(chunk_tensor)
-            yield batches
+            if batches:
+                yield batches
         # Emit spillover.
         if spill is not None:
             yield [spill]
