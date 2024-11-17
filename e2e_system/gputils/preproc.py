@@ -1,9 +1,6 @@
 from tqdm import tqdm
 import torch
-# import nvtabular as nvt
-# import merlin
-# from merlin.schema import Tags
-# from nvtabular.loader.torch import TorchAsyncItr, DLDataLoader
+from torch.utils.data import DataLoader
 import dask.dataframe as dd
 import cudf
 import dask_cudf
@@ -12,6 +9,7 @@ from cuml.dask.preprocessing import OneHotEncoder
 from cuml.preprocessing import StandardScaler
 from dask_ml.wrappers import Incremental
 import dask
+from gputils.dataloaders import SequentialBatcher
 # from merlin.core.compat import HAS_GPU, cudf, dask_cudf, device_mem_size
 
 
@@ -24,26 +22,22 @@ def _collate(batch):
     label_tensor = labels
     return feature_tensor, label_tensor
 
-# def create_loader(
-#         transformed_ds,
-#         continuous_columns,
-#         categorical_columns,
-#         label_columns,
-#         batch_size=32
-# ):
-#     """
-#     Takes NVT dataset returns a PyTorch Dataloader. This should be used
-#     after all preprocessing has already been done.
-#     """
-#     nvt_iter = TorchAsyncItr(
-#         transformed_ds,
-#         cats=categorical_columns,
-#         conts=continuous_columns,
-#         labels=label_columns,
-#         batch_size=batch_size
-#     )
-#     loader = DLDataLoader(nvt_iter, collate_fn=_collate)
-#     return loader
+def create_loader(
+        transformed_ds,
+        batch_size=64,
+        **kwargs
+):
+    """
+    Takes dask_cudf.DataFrame and returns PyTorch Dataloader. Kwargs
+    are passed to the DataLoader
+    """
+    dataset = SequentialBatcher(transformed_ds, batch_size=batch_size)
+    data_loader = DataLoader(
+        dataset,
+        batch_size=None,
+        **kwargs
+    )
+    return data_loader
 
 
 def nvt_read_data(
@@ -57,6 +51,7 @@ def nvt_read_data(
     """
     # Getting the ddf (Dask Dataframe) to compute statistics.
     dask.config.set({"dataframe.backend": "cudf"})
+
     blocksize = int(1e+9)
     ddf = dd.read_csv(
         input_file_paths,
@@ -165,11 +160,6 @@ def gpu_preproc(
 
     # cont_ddf = cont_ddf.set_index(cat_ddf.index, divisions=cat_ddf.divisions)
     # reordered_ddf = dask_cudf.concat([cat_ddf, cont_ddf], axis=1).astype(output_dtype)
-
-    # Get pandas index because cuDF RangeIndex does not implement _constructor.
-    # index = transformed_dataset.index.map_partitions(cudf.RangeIndex.to_pandas)
-
-    # reordered_ddf = reordered_ddf.set_index(index, divisions=cat_ddf.divisions)
 
     final_col_names = one_hot_names + continuous_columns
     reordered_ddf = transformed_dataset[final_col_names]

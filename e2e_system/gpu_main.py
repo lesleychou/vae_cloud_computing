@@ -31,7 +31,7 @@ from utils import (
 )
 
 # GPU stuff.
-from gputils.preproc import nvt_read_data, gpu_preproc
+from gputils.preproc import nvt_read_data, gpu_preproc, create_loader
 from gputils.dataloaders import SequentialBatcher
 from dask.distributed import Client
 
@@ -42,15 +42,10 @@ warnings.filterwarnings("ignore")
 def train(config, X_train, num_continuous, num_categories):
 
     # Prepare data for interaction with torch VAE
-    Y = SequentialBatcher(X_train, batch_size=config.batch_size)
-    dataset = Y
-
+    
     # TODO: Maybe I implement UniformWithReplacement sampling later? Idk 
     # how important that is.
-    data_loader = DataLoader(
-        dataset,
-        batch_size=None
-    )
+    data_loader = create_loader(X_train, batch_size=config.batch_size)
 
     # Create VAE
     encoder = Encoder(X_train.shape[1], config.latent_dim, hidden_dim=config.hidden_dim)
@@ -105,7 +100,7 @@ def train(config, X_train, num_continuous, num_categories):
 def generate_diff_size(config, vae_model, X_train, input_df,
                        reordered_dataframe_columns, continuous_transformers, categorical_transformers, size=None):
     if not size:
-        size = X_train.shape[0]
+        size = len(X_train)
     # Generate synthetic data with X_train
     train_synthetic_sample = vae_model.generate(size)
 
@@ -136,6 +131,8 @@ def generate_diff_size(config, vae_model, X_train, input_df,
     return train_synthetic_supp
 
 def main(config):
+    # No global client available, so have to init this ourselves.
+    # Maybe something to do with VM environment?
     client = Client()
     # if config.output_processed_data_path does not exist, create the directory
     if not os.path.exists(config.output_processed_data_save_dir):
@@ -144,7 +141,7 @@ def main(config):
         os.makedirs(config.syn_data_save_dir)
 
     # TODO: Make this function accept glob of file paths.
-    train_df, original_continuous_columns, original_categorical_columns = nvt_read_data(input_file_paths=[config.input_data_path for _ in range(1)],
+    train_df, original_continuous_columns, original_categorical_columns = nvt_read_data(input_file_paths=[config.input_data_path for _ in range(2)],
                                                                                     output_file_path=config.output_processed_data_path)
     print("Continuous columns: ", original_continuous_columns)
     print("Categorical columns: ", original_categorical_columns)
@@ -167,6 +164,7 @@ def main(config):
 
     # Not sure we can print shape here if the data is huge
 
+    original_input_transformed.visualize(filename='task_graph.svg')
     
     X_train = original_input_transformed
     print(X_train.columns)
