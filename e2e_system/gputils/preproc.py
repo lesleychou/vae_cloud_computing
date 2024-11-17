@@ -11,6 +11,7 @@ import cuml
 from cuml.dask.preprocessing import OneHotEncoder
 from cuml.preprocessing import StandardScaler
 from dask_ml.wrappers import Incremental
+import dask
 # from merlin.core.compat import HAS_GPU, cudf, dask_cudf, device_mem_size
 
 
@@ -55,8 +56,9 @@ def nvt_read_data(
     Takes a list of csv file names and reads them into a dataset.
     """
     # Getting the ddf (Dask Dataframe) to compute statistics.
+    dask.config.set({"dataframe.backend": "cudf"})
     blocksize = int(1e+9)
-    ddf = dask_cudf.read_csv(
+    ddf = dd.read_csv(
         input_file_paths,
         blocksize=blocksize
     )
@@ -129,8 +131,8 @@ def gpu_preproc(
         standardizer.fit(temp_columns)
         cont_ddf = temp_columns.map_partitions(standardizer.transform)
         continuous_transformers["standard"] = standardizer
-        # transformed_dataset[continuous_columns] = cont_ddf
-        cont_ddf.columns = continuous_columns
+        transformed_dataset[continuous_columns] = cont_ddf
+        # cont_ddf.columns = continuous_columns
         # for col, temp_col in zip(continuous_columns, temp_columns.columns):
         #     transformed_dataset[col] = temp_columns[temp_col]
 
@@ -149,18 +151,28 @@ def gpu_preproc(
     one_hot_names = list(one_hot_encoder.get_feature_names(categorical_columns))
 
     # Move one hot features to DataFrame so we can reorder with continuous features.
+    # Assign columns individually to preserve ddf index alignment.
     one_hot_arr.compute_chunk_sizes()
-    cat_ddf = one_hot_arr.to_dask_dataframe(columns=one_hot_names)
+    for i, col in enumerate(one_hot_names):
+        transformed_dataset[col] = one_hot_arr[:, i]
 
 
     # We need the dataframe in the correct format i.e. categorical variables first and in the order of
     # num_categories with continuous variables placed after. Need to specify divisions so that concat will work.
 
     # Apparently referencing a slice doesn't quite acquire the whole computation graph 
-    # associated with the underlying data, and you have to ref the transformed data itself.
+    # associated with the underlying data, so you have to ref the transformed data itself.
 
-    cont_ddf = cont_ddf.set_index(cat_ddf.index, divisions=cat_ddf.divisions)
-    reordered_ddf = dask_cudf.concat([cat_ddf, cont_ddf], axis=1).astype(output_dtype)
+    # cont_ddf = cont_ddf.set_index(cat_ddf.index, divisions=cat_ddf.divisions)
+    # reordered_ddf = dask_cudf.concat([cat_ddf, cont_ddf], axis=1).astype(output_dtype)
+
+    # Get pandas index because cuDF RangeIndex does not implement _constructor.
+    # index = transformed_dataset.index.map_partitions(cudf.RangeIndex.to_pandas)
+
+    # reordered_ddf = reordered_ddf.set_index(index, divisions=cat_ddf.divisions)
+
+    final_col_names = one_hot_names + continuous_columns
+    reordered_ddf = transformed_dataset[final_col_names]
 
     return (
         reordered_ddf,
