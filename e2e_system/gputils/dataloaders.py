@@ -27,10 +27,11 @@ class DataFrameIter:
             # will not be correct if rows where added or dropped
             # after IO (within Ops).
             self.length = sum(self.partition_lens[i] for i in self.indices)
-            return sum(self.partition_lens[i] for i in self.indices)
+            return self.length
         # Computing length manually.
         if len(self.indices) < self.ddf.npartitions:
-            return len(self.ddf.partitions[self.indices])
+            self.length = len(self.ddf.partitions[self.indices])
+            return self.length
         
         self.length = len(self.ddf)
         return self.length
