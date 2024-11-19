@@ -31,7 +31,9 @@ from utils import (
 )
 
 # GPU stuff.
-from gputils.preproc import nvt_read_data
+from gputils.preproc import nvt_read_data, gpu_preproc, create_loader
+from gputils.dataloaders import SequentialBatcher
+from dask.distributed import Client
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -40,19 +42,10 @@ warnings.filterwarnings("ignore")
 def train(config, X_train, num_continuous, num_categories):
 
     # Prepare data for interaction with torch VAE
-    Y = torch.Tensor(X_train)
-    dataset = TensorDataset(Y)
-
-    generator = None
-    sample_rate = config.batch_size / len(dataset)
-    data_loader = DataLoader(
-        dataset,
-        batch_sampler=UniformWithReplacementSampler(num_samples=len(dataset),
-                                                    sample_rate=sample_rate,
-                                                    generator=generator),
-        pin_memory=True,
-        generator=generator,
-    )
+    
+    # TODO: Maybe I implement UniformWithReplacement sampling later? Idk 
+    # how important that is.
+    data_loader = create_loader(X_train, batch_size=config.batch_size)
 
     # Create VAE
     encoder = Encoder(X_train.shape[1], config.latent_dim, hidden_dim=config.hidden_dim)
@@ -107,7 +100,7 @@ def train(config, X_train, num_continuous, num_categories):
 def generate_diff_size(config, vae_model, X_train, input_df,
                        reordered_dataframe_columns, continuous_transformers, categorical_transformers, size=None):
     if not size:
-        size = X_train.shape[0]
+        size = len(X_train)
     # Generate synthetic data with X_train
     train_synthetic_sample = vae_model.generate(size)
 
@@ -138,6 +131,9 @@ def generate_diff_size(config, vae_model, X_train, input_df,
     return train_synthetic_supp
 
 def main(config):
+    # No global client available, so have to init this ourselves.
+    # Maybe something to do with VM environment?
+    client = Client()
     # if config.output_processed_data_path does not exist, create the directory
     if not os.path.exists(config.output_processed_data_save_dir):
         os.makedirs(config.output_processed_data_save_dir)
@@ -145,35 +141,41 @@ def main(config):
         os.makedirs(config.syn_data_save_dir)
 
     # TODO: Make this function accept glob of file paths.
-    train_df, original_continuous_columns, original_categorical_columns = nvt_read_data(input_file_paths=[config.input_data_path],
+    train_df, original_continuous_columns, original_categorical_columns = nvt_read_data(input_file_paths=[config.input_data_path for _ in range(2)],
                                                                                     output_file_path=config.output_processed_data_path)
     print("Continuous columns: ", original_continuous_columns)
     print("Categorical columns: ", original_categorical_columns)
 
-    pre_proc_method = "GMM"
+    pre_proc_method = "standard"
+
 
     # TODO: Rework this part to work on GPU (at least with basic data preprocessing).
     (
         original_input_transformed,
-        original_input_original,
         reordered_dataframe_columns,
         continuous_transformers,
         categorical_transformers,
         num_categories,
         num_continuous,
-    ) = mimic_pre_proc(train_df,
+    ) = gpu_preproc(train_df,
                        original_continuous_columns,
                        original_categorical_columns,
                        pre_proc_method=pre_proc_method)
 
     # Not sure we can print shape here if the data is huge
+
+    original_input_transformed.visualize(filename='task_graph.svg')
+    
     X_train = original_input_transformed
-    print("Input data shape: ", X_train.shape)
+    print(X_train.columns)
+    print("Input data shape: ", X_train.shape[1])
 
     vae, encoder, decoder = train(config, X_train, num_continuous, num_categories)
 
     load_vae = VAE(encoder, decoder)
     load_vae.load_state_dict(torch.load(config.filepath))
+
+    return
 
     # TODO: Figure out how to take generated data and
     # 1. Return it to original format.
