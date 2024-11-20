@@ -10,10 +10,15 @@ class DataFrameIter:
     """Ripped straight from core.merlin.io. Iterates through partitions of dask DataFrame."""
     
     def __init__(self, ddf, columns=None, indices=None, partition_lens=None):
-        self.indices = indices if isinstance(indices, list) else range(ddf.npartitions)
+        self.indices = indices if isinstance(indices, list) else list(range(ddf.npartitions))
         self.ddf = ddf
         self.columns = columns
-        self.partition_lens = partition_lens
+        self.partition_lens = partition_lens if partition_lens else [None] * self.ddf.npartitions
+        self.length = None
+
+    def __call__(self, indices):
+        """Sets the indices to iterate over. Length will have to be recomputed though."""
+        self.indices = indices
         self.length = None
 
     def __len__(self):
@@ -21,7 +26,9 @@ class DataFrameIter:
         if self.length:
             return self.length
         
-        if self.partition_lens:
+        # Check that every partition has a length.
+        part_lens = [self.partition_lens[i] for i in self.indices if self.partition_lens[i] is not None]
+        if len(part_lens) < len(self.indices):
             # Use metadata-based partition-size information
             # if/when it is available.  Note that this metadata
             # will not be correct if rows where added or dropped
@@ -38,7 +45,6 @@ class DataFrameIter:
 
     def __iter__(self):
         # Compute length and partition lengths while iterating.
-        part_lens = [0] * self.ddf.npartitions
         length = 0
         for i in self.indices:
             part = self.ddf.partitions[i]
@@ -47,17 +53,16 @@ class DataFrameIter:
             else:
                 result = part.compute(scheduler="synchronous")
 
-            part_lens[i] = len(result)
-            length += part_lens[i]
+            self.partition_lens[i] = len(result)
+            length += self.partition_lens[i]
 
             yield result
-        self.partition_lens = part_lens
         self.length = length
         # Is this here to make sure part gets GC'd?
         part = None
 
     def __getitem__(self, idx):
-        part = self.ddf.get_partition(idx)
+        part = self.ddf.partitions[idx]
         if self.columns:
             return part[self.columns].compute(scheduler="synchronous")
         else:
@@ -75,9 +80,9 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         dtype=None
     ):
         self.ddf = ddf
+        self.shuffle = shuffle
         self.data = DataFrameIter(ddf)
         self.batch_size = batch_size
-        self.shuffle = shuffle
         # Default should be float32.
         self.dtype = dtype if dtype else torch.get_default_dtype()
 
@@ -88,6 +93,20 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         return num_batches
 
     def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        # Check for multiprocess.
+        if worker_info is not None:
+            indices = self.data.indices
+            num_workers = worker_info.num_workers
+            per_worker = math.ceil(len(indices) / num_workers)
+            worker_id = worker_info.id
+
+            start = worker_id * per_worker
+            end = start + per_worker
+
+            # Sets DataFrame iter to iterate a slice.
+            self.data(indices[start:end])
+
         batch_iterator = self.get_batches()
         for batch_group in batch_iterator:
             for batch in batch_group:
@@ -95,7 +114,10 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
                 yield (batch,)
 
     def get_batches(self):
-        """A generator that turns each cuDF partition into a list of torch.Tensor batches."""
+        """
+        A generator that turns each cuDF partition into a list of torch.Tensor batches.
+        Assumes that self.data was initialized already.
+        """
         spill: torch.Tensor = None
         for chunk in self.data:
             chunk_tensor = self.cudf_to_tensor(chunk)

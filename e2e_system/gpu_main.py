@@ -32,9 +32,12 @@ from utils import (
 
 # GPU stuff.
 from gputils.preproc import nvt_read_data, gpu_preproc, create_loader
+from gputils.postproc import gpu_reverse_transformers
 from gputils.dataloaders import SequentialBatcher
 from dask.distributed import Client
-
+import cudf
+import dask_cudf
+import cupy as cp
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -103,12 +106,35 @@ def generate_diff_size(config, vae_model, X_train, input_df,
         size = len(X_train)
     # Generate synthetic data with X_train
     train_synthetic_sample = vae_model.generate(size)
+    
 
     if torch.cuda.is_available():
-        train_synthetic_sample = pd.DataFrame(
-            train_synthetic_sample.cpu().detach().numpy(),
+        # trying to 
+        # synthetic_shape = train_synthetic_sample.shape
+        # synthetic_dtype = train_synthetic_sample.dtype
+
+        # dtype_map = {
+        #     torch.float32: cp.float32,
+        #     torch.float64: cp.float64,
+        #     torch.int32: cp.int32,
+        #     torch.int64: cp.int64,
+        # }
+
+        # synthetic_cupy_dtype = dtype_map[synthetic_dtype]
+
+        # train_synthetic_sample = cp.ndarray(
+        #     shape=synthetic_shape,                   
+        #     dtype=synthetic_cupy_dtype,               
+        #     memptr=cp.cuda.MemoryPointer(   
+        #         cp.cuda.Memory(train_synthetic_sample.data_ptr()), 0
+        #     )
+        # )
+        train_synthetic_sample = cp.asarray(train_synthetic_sample.cpu().detach().numpy())
+        train_synthetic_sample = cudf.DataFrame(
+            train_synthetic_sample,
             columns=reordered_dataframe_columns
         )
+        train_synthetic_sample = dask_cudf.from_cudf(train_synthetic_sample, npartitions=2560)
     else:
         train_synthetic_sample = pd.DataFrame(
             train_synthetic_sample.detach().numpy(),
@@ -116,7 +142,7 @@ def generate_diff_size(config, vae_model, X_train, input_df,
         )
     # Reverse the transformations
 
-    train_synthetic_supp = reverse_transformers(
+    train_synthetic_supp = gpu_reverse_transformers(
         synthetic_set=train_synthetic_sample,
         data_supp_columns=input_df.columns,
         cont_transformers=continuous_transformers,
@@ -125,8 +151,11 @@ def generate_diff_size(config, vae_model, X_train, input_df,
     )
 
     # remove all the negative value from generation
-    train_synthetic_supp = train_synthetic_supp.clip(lower=0)
-    train_synthetic_supp = train_synthetic_supp.round(0)
+    # train_synthetic_supp = train_synthetic_supp.clip(lower=0)
+    # train_synthetic_supp = train_synthetic_supp.round(0)
+    train_synthetic_supp = train_synthetic_supp.map_partitions(
+        lambda df: df.clip(lower=0).round(0), meta=train_synthetic_supp._meta
+    )
 
     return train_synthetic_supp
 
@@ -149,7 +178,8 @@ def main(config):
     pre_proc_method = "standard"
 
 
-    # TODO: Rework this part to work on GPU (at least with basic data preprocessing).
+    # TODO: Should this also return the names of the new columns?
+    # Does the reverse_transformers() need to know the column names?
     (
         original_input_transformed,
         reordered_dataframe_columns,
@@ -175,15 +205,15 @@ def main(config):
     load_vae = VAE(encoder, decoder)
     load_vae.load_state_dict(torch.load(config.filepath))
 
-    return
-
     # TODO: Figure out how to take generated data and
     # 1. Return it to original format.
     # 2. Write it to disk (idk if we want to do many files or one big file).
     syn_generated_data = generate_diff_size(config, load_vae, X_train, train_df,
                                             reordered_dataframe_columns, continuous_transformers, categorical_transformers, size=None)
+    return
+    syn_generated_data = syn_generated_data.compute()
     syn_generated_data.to_csv(config.syn_data_path, index=False)
-
+    print("output written")
     # all_sizes = [10, 100, 1000, 5000, 10000, X_train.shape[0]]
     #
     # for size_i in all_sizes:
