@@ -9,29 +9,35 @@ from cuml.dask.preprocessing import OneHotEncoder
 from cuml.preprocessing import StandardScaler
 from dask_ml.wrappers import Incremental
 import dask
-from gputils.dataloaders import SequentialBatcher
+from gputils.dataloaders import *
 # from merlin.core.compat import HAS_GPU, cudf, dask_cudf, device_mem_size
 
-
-def _collate(batch):
-    features, labels = batch[0]
-    feature_cols = []
-    for feature in features:
-        feature_cols.append(features[feature])
-    feature_tensor = torch.stack(feature_cols, dim=1)
-    label_tensor = labels
-    return feature_tensor, label_tensor
 
 def create_loader(
         transformed_ds,
         batch_size=64,
+        dtype=None,
         **kwargs
 ):
     """
     Takes dask_cudf.DataFrame and returns PyTorch Dataloader. Kwargs
-    are passed to the DataLoader
+    are passed to the DataLoader.
     """
-    dataset = SequentialBatcher(transformed_ds, batch_size=batch_size)
+    dataset = ThreadedBatcher(
+        ddf=transformed_ds, 
+        batch_size=batch_size,
+        dtype=dtype
+    )
+    # Is multiprocess. Have to make sure that these kwargs
+    # are passed for DataLoader to return CUDA Tensors.
+    is_mp = kwargs.get('num_workers')
+    if is_mp and is_mp > 0 and dataset.device == 'cuda':
+        # Default to forkserver.
+        context = kwargs.get('multiprocessing_context')
+        if not context:
+            kwargs['multiprocessing_context'] = 'forkserver'
+        kwargs['persistent_workers'] = True
+
     data_loader = DataLoader(
         dataset,
         batch_size=None,
@@ -43,23 +49,27 @@ def create_loader(
 def nvt_read_data(
         input_file_paths, 
         excluded_cols=['time'], 
-        output_file_path=None, 
+        output_file_path=None,
+        dtype=None,
         **kwargs
 ):
     """
     Takes a list of csv file names and reads them into a dataset.
     """
+    if not dtype:
+        dtype = 'float32'
+        
     # Getting the ddf (Dask Dataframe) to compute statistics.
     dask.config.set({"dataframe.backend": "cudf"})
 
-    blocksize = int(1e+9)
     ddf = dd.read_csv(
         input_file_paths,
-        blocksize=blocksize
-    )
+        **kwargs
+    ).astype(dtype)
 
     # Drop any unwanted columns.
-    ddf = ddf.drop(columns=excluded_cols)
+    if excluded_cols:
+        ddf = ddf.drop(columns=excluded_cols)
 
     original_continuous_columns = []
     original_categorical_columns = []
@@ -81,6 +91,10 @@ def nvt_read_data(
     # disk space for that. Maybe we make that optional.
 
     return ddf, original_continuous_columns, original_categorical_columns
+
+
+def fake_score(y1, y2):
+    return 0
 
 
 def gpu_preproc(
@@ -120,19 +134,17 @@ def gpu_preproc(
         standardizer = Incremental(
             StandardScaler(),
             shuffle_blocks=False,
-            scoring=lambda y1, y2: 0
+            scoring=fake_score
         )
         temp_columns = transformed_dataset[continuous_columns]
         standardizer.fit(temp_columns)
         cont_ddf = temp_columns.map_partitions(standardizer.transform)
-        continuous_transformers["standard"] = standardizer
+        # Have to pass the fitted estimator because Incremental does not have inverse_transform().
+        continuous_transformers["standard"] = standardizer.estimator_
         transformed_dataset[continuous_columns] = cont_ddf
         # cont_ddf.columns = continuous_columns
         # for col, temp_col in zip(continuous_columns, temp_columns.columns):
         #     transformed_dataset[col] = temp_columns[temp_col]
-
-
-        print(temp_columns)
 
     num_continuous = len(continuous_columns)
 
