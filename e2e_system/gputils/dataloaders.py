@@ -4,6 +4,7 @@ import cudf
 import torch
 import queue
 import math
+import threading
 
 
 class DataFrameIter:
@@ -67,7 +68,7 @@ class DataFrameIter:
             return part[self.columns].compute(scheduler="synchronous")
         else:
             return part.compute(scheduler="synchronous")
-
+        
 
 class SequentialBatcher(torch.utils.data.IterableDataset):
     """Makes batches of PyTorch tensors (GPU) out of dask_cudf.DataFrame partitions."""
@@ -81,18 +82,30 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
     ):
         self.ddf = ddf
         self.shuffle = shuffle
-        self.data = DataFrameIter(ddf)
         self.batch_size = batch_size
         # Default should be float32.
         self.dtype = dtype if dtype else torch.get_default_dtype()
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        self.data = DataFrameIter(ddf)
 
     def __len__(self):
         num_batches = math.ceil(len(self.data) / self.batch_size)
         return num_batches
 
     def __iter__(self):
+        if self.create_worker_split():
+            # Multiprocessing with CUDA is difficult.
+            self.device = 'cpu'
+        batch_iterator = self.get_batches()
+        for batch_group in batch_iterator:
+            for batch in batch_group:
+                # Need to put in iterable/tuple because vae.train() unpacks output of data loader.
+                yield (batch,)
+
+    def create_worker_split(self):
+        """Splits underlying dask df across workers (PyTorch DataLoader)."""
         worker_info = torch.utils.data.get_worker_info()
         # Check for multiprocess.
         if worker_info is not None:
@@ -106,12 +119,8 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
 
             # Sets DataFrame iter to iterate a slice.
             self.data(indices[start:end])
-
-        batch_iterator = self.get_batches()
-        for batch_group in batch_iterator:
-            for batch in batch_group:
-                # Need to put in iterable/tuple because vae.train() unpacks output of data loader.
-                yield (batch,)
+            return True
+        return False
 
     def get_batches(self):
         """
@@ -145,3 +154,124 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
                 spill = batches[-1]
                 batches = batches[:-1]
         return batches, spill
+    
+
+class ThreadedBatcher(SequentialBatcher):
+    """Uses threads to prefetch partitions (and convert them to tensors) in the background."""
+
+    def __init__(self, ddf, batch_size=64, shuffle=False, dtype=None, qsize=1):
+        super().__init__(ddf, batch_size, shuffle, dtype)
+        self.batch_queue = queue.Queue(qsize)
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.batch_group = None
+
+    def __iter__(self):
+        if self.create_worker_split():
+            self.device = 'cpu'
+        # I'm assuming this start stop stuff is for if it gets reinitialized before it
+        # finishes elsewhere?
+        self.stop()
+        if self.stopped:
+            self.start()
+
+        t = threading.Thread(target=self.load_batches)
+        t.daemon = True
+        t.start()
+        self.thread = t
+
+        while True:
+            batch_group = self.dequeue()
+            for batch in batch_group:
+                yield (batch,)
+            batch_group = None
+            if not self.working and self.empty:
+                self.thread = None
+                self.batch_group = None
+                return
+            
+    # def __next__(self):
+    #     if self.working:
+    #         t = threading.Thread(target=self.load_batches)
+    #         t.daemon = True
+    #         t.start()
+    #         self.thread = t
+    #     if self.batch_group is None:
+    #         self.batch_group = iter(self.dequeue())
+    #     try:
+    #         batch = next(self.batch_group)
+    #     except StopIteration:
+    #         if not self.working and self.empty:
+    #             self.thread = None
+    #             self.batch_group = None
+    #             raise
+    #         self.batch_group = self.dequeue()
+    #         batch = next(batch)
+    #     return batch
+
+            
+    def dequeue(self):
+        chunks = self.batch_queue.get()
+        if isinstance(chunks, Exception):
+            self.stop()
+            raise chunks
+        return chunks
+
+    def enqueue(self, packet):
+        while True:
+            if self.stopped:
+                return True
+            try:
+                self.batch_queue.put(packet, timeout=1e-6)
+                return False
+            except queue.Full:
+                continue
+
+    def load_batches(self):
+        try:
+            self.enqueue_batches()
+        except Exception as e:  # pylint: disable=broad-except
+            self.enqueue(e)
+
+    def enqueue_batches(self):
+        """
+        A generator that turns each cuDF partition into a list of torch.Tensor batches.
+        Assumes that self.data was initialized already.
+        """
+        for chunk_batch in self.get_batches():
+            if self.stopped:
+                return
+            if len(chunk_batch) > 0:
+                # put returns True if buffer is stopped before
+                # packet can be put in queue. Keeps us from
+                # freezing on a put on a full queue
+                if self.enqueue(chunk_batch):
+                    return
+            # Does this free memory?
+            chunk_batch = None
+
+    @property
+    def stopped(self):
+        return self.stop_event.is_set()
+    
+    @property
+    def working(self):
+        if self.thread is not None:
+            return self.thread.is_alive()
+        return False
+    
+    @property
+    def empty(self):
+        return self.batch_queue.empty()
+
+    def stop(self):
+        if self.thread is not None:
+            if not self.stopped:
+                # Stop thread.
+                self.stop_event.set()
+            self.thread.join()
+            self.thread = None
+            self.batch_queue.queue.clear()
+
+    def start(self):
+        self.stop_event.clear()

@@ -16,7 +16,7 @@ sys.path.append("../")
 from opacus.utils.uniform_sampler import UniformWithReplacementSampler
 # For VAE dataset formatting
 from torch.utils.data import TensorDataset, DataLoader
-
+from torch.utils.dlpack import to_dlpack
 # VAE functions
 from VAE import Decoder, Encoder, VAE
 
@@ -42,13 +42,12 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def train(config, X_train, num_continuous, num_categories):
+def train(config, X_train, num_continuous, num_categories, **kwargs):
 
     # Prepare data for interaction with torch VAE
     
-    # TODO: Maybe I implement UniformWithReplacement sampling later? Idk 
-    # how important that is.
-    data_loader = create_loader(X_train, batch_size=config.batch_size)
+    # Kwargs passed to data loader.
+    data_loader = create_loader(X_train, batch_size=config.batch_size, **kwargs)
 
     # Create VAE
     encoder = Encoder(X_train.shape[1], config.latent_dim, hidden_dim=config.hidden_dim)
@@ -109,31 +108,15 @@ def generate_diff_size(config, vae_model, X_train, input_df,
     
 
     if torch.cuda.is_available():
-        # trying to 
-        # synthetic_shape = train_synthetic_sample.shape
-        # synthetic_dtype = train_synthetic_sample.dtype
-
-        # dtype_map = {
-        #     torch.float32: cp.float32,
-        #     torch.float64: cp.float64,
-        #     torch.int32: cp.int32,
-        #     torch.int64: cp.int64,
-        # }
-
-        # synthetic_cupy_dtype = dtype_map[synthetic_dtype]
-
-        # train_synthetic_sample = cp.ndarray(
-        #     shape=synthetic_shape,                   
-        #     dtype=synthetic_cupy_dtype,               
-        #     memptr=cp.cuda.MemoryPointer(   
-        #         cp.cuda.Memory(train_synthetic_sample.data_ptr()), 0
-        #     )
+        # train_synthetic_sample = cp.asarray(train_synthetic_sample.cpu().detach().numpy())
+        # train_synthetic_sample = cudf.DataFrame(
+        #     train_synthetic_sample,
+        #     columns=reordered_dataframe_columns
         # )
-        train_synthetic_sample = cp.asarray(train_synthetic_sample.cpu().detach().numpy())
-        train_synthetic_sample = cudf.DataFrame(
-            train_synthetic_sample,
-            columns=reordered_dataframe_columns
-        )
+        
+        train_synthetic_sample = train_synthetic_sample.to_dlpack()
+        train_synthetic_sample = cudf.from_dlpack(train_synthetic_sample)
+        train_synthetic_sample.columns = reordered_dataframe_columns
         train_synthetic_sample = dask_cudf.from_cudf(train_synthetic_sample, npartitions=2560)
     else:
         train_synthetic_sample = pd.DataFrame(
