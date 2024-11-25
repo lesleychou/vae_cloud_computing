@@ -5,38 +5,35 @@ import dask.dataframe as dd
 import cudf
 import dask_cudf
 import cuml
-from cuml.dask.preprocessing import OneHotEncoder
-from cuml.preprocessing import StandardScaler
+from cuml.dask.preprocessing import OneHotEncoder as CumlOneHotEncoder
+from cuml.preprocessing import StandardScaler as CumlStandardScaler
 from dask_ml.wrappers import Incremental
 import dask
 from gputils.dataloaders import *
 # from merlin.core.compat import HAS_GPU, cudf, dask_cudf, device_mem_size
+from dask_ml.preprocessing import StandardScaler, DummyEncoder
 
 
 def create_loader(
         transformed_ds,
-        batch_size=64,
+        batch_size=1024,
         dtype=None,
+        threaded=False,
         **kwargs
 ):
     """
     Takes dask_cudf.DataFrame and returns PyTorch Dataloader. Kwargs
     are passed to the DataLoader.
     """
-    dataset = ThreadedBatcher(
+    Batcher = SequentialBatcher
+    if threaded:
+        Batcher = ThreadedBatcher
+
+    dataset = Batcher(
         ddf=transformed_ds, 
         batch_size=batch_size,
         dtype=dtype
     )
-    # Is multiprocess. Have to make sure that these kwargs
-    # are passed for DataLoader to return CUDA Tensors.
-    is_mp = kwargs.get('num_workers')
-    if is_mp and is_mp > 0 and dataset.device == 'cuda':
-        # Default to forkserver.
-        context = kwargs.get('multiprocessing_context')
-        if not context:
-            kwargs['multiprocessing_context'] = 'forkserver'
-        kwargs['persistent_workers'] = True
 
     data_loader = DataLoader(
         dataset,
@@ -49,8 +46,8 @@ def create_loader(
 def nvt_read_data(
         input_file_paths, 
         excluded_cols=['time'], 
-        output_file_path=None,
         dtype=None,
+        backend='cudf',
         **kwargs
 ):
     """
@@ -60,7 +57,7 @@ def nvt_read_data(
         dtype = 'float32'
         
     # Getting the ddf (Dask Dataframe) to compute statistics.
-    dask.config.set({"dataframe.backend": "cudf"})
+    dask.config.set({"dataframe.backend": backend})
 
     ddf = dd.read_csv(
         input_file_paths,
@@ -132,7 +129,7 @@ def gpu_preproc(
         # This wrapper repeatedly calls partial_fit() on chunks. It requires a scoring function
         # so just pass it a dummy function.
         standardizer = Incremental(
-            StandardScaler(),
+            CumlStandardScaler(),
             shuffle_blocks=False,
             scoring=fake_score
         )
@@ -145,11 +142,13 @@ def gpu_preproc(
         # cont_ddf.columns = continuous_columns
         # for col, temp_col in zip(continuous_columns, temp_columns.columns):
         #     transformed_dataset[col] = temp_columns[temp_col]
+    else:
+        print(f'Preprocessing method not supported: {pre_proc_method}')
 
     num_continuous = len(continuous_columns)
 
     # Make one hot columns out of categorical features.
-    one_hot_encoder = OneHotEncoder(sparse_output=False)
+    one_hot_encoder = CumlOneHotEncoder(sparse_output=False)
     temp_columns = transformed_dataset[categorical_columns]
     one_hot_arr = one_hot_encoder.fit_transform(temp_columns)
     categorical_transformers["one_hot"] = one_hot_encoder
@@ -174,7 +173,82 @@ def gpu_preproc(
     # reordered_ddf = dask_cudf.concat([cat_ddf, cont_ddf], axis=1).astype(output_dtype)
 
     final_col_names = one_hot_names + continuous_columns
-    reordered_ddf = transformed_dataset[final_col_names]
+    reordered_ddf = transformed_dataset[final_col_names].astype(output_dtype)
+
+    return (
+        reordered_ddf,
+        reordered_ddf.columns,
+        continuous_transformers,
+        categorical_transformers,
+        num_categories,
+        num_continuous,
+    )
+
+def dask_preproc(
+        data_supp: dd,
+        original_continuous_columns,
+        original_categorical_columns,
+        pre_proc_method='standard',
+        output_dtype='float32'
+):
+    # Specify column configurations
+    # original_categorical_columns = [
+    #     'load-interval'
+    # ]
+    # original_continuous_columns = ['output-packet-rate']
+
+    categorical_columns = original_categorical_columns.copy()
+    continuous_columns = original_continuous_columns.copy()
+
+    # As of coding this, new version of RDT adds in GMM transformer which is what we require, however hyper transformers do not work as individual
+    # transformers take a 'columns' argument that can only allow for fitting of one column - so you need to loop over and create one for each column
+    # in order to fit the dataset - https://github.com/sdv-dev/RDT/issues/376
+
+    continuous_transformers = {}
+    categorical_transformers = {}
+
+    transformed_dataset = data_supp
+
+    # Convert categoricals (assumed to be numeric) to dtype int. Is this to avoid floating pt error?
+    categorical_part = transformed_dataset[categorical_columns].astype(int)
+    num_categories = categorical_part.nunique().compute()
+    num_categories = list(num_categories.values)
+
+    transformed_dataset = transformed_dataset.categorize(categorical_columns)
+
+    if pre_proc_method == "standard":
+        # Fit cuML standard scaler to all continuous columns.
+        # This wrapper repeatedly calls partial_fit() on chunks. It requires a scoring function
+        # so just pass it a dummy function.
+
+        standardizer = StandardScaler()
+        temp_columns = transformed_dataset[continuous_columns]
+        cont_ddf = standardizer.fit_transform(temp_columns)
+        continuous_transformers["standard"] = standardizer
+        transformed_dataset[continuous_columns] = cont_ddf
+
+    num_continuous = len(continuous_columns)
+
+    # Make one hot columns out of categorical features.
+    one_hot_encoder = DummyEncoder(categorical_columns)
+    transformed_dataset = one_hot_encoder.fit_transform(transformed_dataset)
+    categorical_transformers["one_hot"] = one_hot_encoder
+
+    # Get names for one hot categorical features.
+    one_hot_names = list(one_hot_encoder.transformed_columns_)
+
+
+    # We need the dataframe in the correct format i.e. categorical variables first and in the order of
+    # num_categories with continuous variables placed after. Need to specify divisions so that concat will work.
+
+    # Apparently referencing a slice doesn't quite acquire the whole computation graph 
+    # associated with the underlying data, so you have to ref the transformed data itself.
+
+    # cont_ddf = cont_ddf.set_index(cat_ddf.index, divisions=cat_ddf.divisions)
+    # reordered_ddf = dask_cudf.concat([cat_ddf, cont_ddf], axis=1).astype(output_dtype)
+
+    final_col_names = one_hot_names + continuous_columns
+    reordered_ddf = transformed_dataset[final_col_names].astype(output_dtype)
 
     return (
         reordered_ddf,
