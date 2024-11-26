@@ -10,12 +10,13 @@ import threading
 class DataFrameIter:
     """Ripped straight from core.merlin.io. Iterates through partitions of dask DataFrame."""
     
-    def __init__(self, ddf, columns=None, indices=None, partition_lens=None):
+    def __init__(self, ddf, columns=None, indices=None, partition_lens=None, scheduler='synchronous'):
         self.indices = indices if isinstance(indices, list) else list(range(ddf.npartitions))
         self.ddf = ddf
         self.columns = columns
         self.partition_lens = partition_lens if partition_lens else [None] * self.ddf.npartitions
         self.length = None
+        self.scheduler = scheduler
 
     def __call__(self, indices):
         """Sets the indices to iterate over. Length will have to be recomputed though."""
@@ -50,24 +51,25 @@ class DataFrameIter:
         for i in self.indices:
             part = self.ddf.partitions[i]
             if self.columns:
-                result = part[self.columns].compute(scheduler="synchronous")
+                result = part[self.columns].compute(scheduler=self.scheduler)
             else:
-                result = part.compute(scheduler="synchronous")
+                result = part.compute(scheduler=self.scheduler)
 
             self.partition_lens[i] = len(result)
             length += self.partition_lens[i]
-
             yield result
+
+            # Is this here to make sure part gets GC'd?
+            part = None
+
         self.length = length
-        # Is this here to make sure part gets GC'd?
-        part = None
 
     def __getitem__(self, idx):
         part = self.ddf.partitions[idx]
         if self.columns:
-            return part[self.columns].compute(scheduler="synchronous")
+            return part[self.columns].compute(scheduler=self.scheduler)
         else:
-            return part.compute(scheduler="synchronous")
+            return part.compute(scheduler=self.scheduler)
         
 
 class SequentialBatcher(torch.utils.data.IterableDataset):
@@ -76,7 +78,7 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
     def __init__(
         self,
         ddf,
-        batch_size=64,
+        batch_size=1024,
         shuffle=False,
         dtype=None
     ):
@@ -89,14 +91,17 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         self.data = DataFrameIter(ddf)
+        # Save the original indices of the data.
+        self.indices = self.data.indices
 
     def __len__(self):
         num_batches = math.ceil(len(self.data) / self.batch_size)
         return num_batches
 
     def __iter__(self):
+        self.data(self.indices)
         if self.create_worker_split():
-            # Multiprocessing with CUDA is difficult.
+            # Multiprocessing with CUDA is difficult. Disable for now.
             self.device = 'cpu'
         batch_iterator = self.get_batches()
         for batch_group in batch_iterator:
@@ -109,7 +114,7 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         worker_info = torch.utils.data.get_worker_info()
         # Check for multiprocess.
         if worker_info is not None:
-            indices = self.data.indices
+            indices = self.indices
             num_workers = worker_info.num_workers
             per_worker = math.ceil(len(indices) / num_workers)
             worker_id = worker_info.id
@@ -129,18 +134,19 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         """
         spill: torch.Tensor = None
         for chunk in self.data:
-            chunk_tensor = self.cudf_to_tensor(chunk)
+            chunk_tensor = self.df_to_tensor(chunk)
             if spill is not None and spill.numel() > 0:
                 chunk_tensor = torch.concat([spill, chunk_tensor])
             batches, spill = self.batch_tensors(chunk_tensor)
             if batches:
                 yield batches
+            chunk = None
         # Emit spillover.
         if spill is not None:
             yield [spill]
 
 
-    def cudf_to_tensor(self, chunk):
+    def df_to_tensor(self, chunk):
         df_arr = chunk.values
         tensor = torch.as_tensor(df_arr, device=self.device, dtype=self.dtype)
         return tensor
@@ -159,7 +165,7 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
 class ThreadedBatcher(SequentialBatcher):
     """Uses threads to prefetch partitions (and convert them to tensors) in the background."""
 
-    def __init__(self, ddf, batch_size=64, shuffle=False, dtype=None, qsize=1):
+    def __init__(self, ddf, batch_size=1024, shuffle=False, dtype=None, qsize=1):
         super().__init__(ddf, batch_size, shuffle, dtype)
         self.batch_queue = queue.Queue(qsize)
         self.stop_event = threading.Event()
@@ -189,26 +195,6 @@ class ThreadedBatcher(SequentialBatcher):
                 self.thread = None
                 self.batch_group = None
                 return
-            
-    # def __next__(self):
-    #     if self.working:
-    #         t = threading.Thread(target=self.load_batches)
-    #         t.daemon = True
-    #         t.start()
-    #         self.thread = t
-    #     if self.batch_group is None:
-    #         self.batch_group = iter(self.dequeue())
-    #     try:
-    #         batch = next(self.batch_group)
-    #     except StopIteration:
-    #         if not self.working and self.empty:
-    #             self.thread = None
-    #             self.batch_group = None
-    #             raise
-    #         self.batch_group = self.dequeue()
-    #         batch = next(batch)
-    #     return batch
-
             
     def dequeue(self):
         chunks = self.batch_queue.get()
