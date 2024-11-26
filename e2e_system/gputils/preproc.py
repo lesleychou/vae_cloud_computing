@@ -47,18 +47,16 @@ def nvt_read_data(
         input_file_paths, 
         excluded_cols=['time'], 
         dtype=None,
-        backend='cudf',
         **kwargs
 ):
     """
-    Takes a list of csv file names and reads them into a dataset.
+    Takes a list of csv file names and reads them into a dataset. Kwargs
+    like blocksize are passed to dd.read_csv().
     """
     if not dtype:
         dtype = 'float32'
         
     # Getting the ddf (Dask Dataframe) to compute statistics.
-    dask.config.set({"dataframe.backend": backend})
-
     ddf = dd.read_csv(
         input_file_paths,
         **kwargs
@@ -143,7 +141,7 @@ def gpu_preproc(
         # for col, temp_col in zip(continuous_columns, temp_columns.columns):
         #     transformed_dataset[col] = temp_columns[temp_col]
     else:
-        print(f'Preprocessing method not supported: {pre_proc_method}')
+        print(f'Preprocessing method not supported (forward pass): {pre_proc_method}')
 
     num_continuous = len(continuous_columns)
 
@@ -183,6 +181,7 @@ def gpu_preproc(
         num_categories,
         num_continuous,
     )
+
 
 def dask_preproc(
         data_supp: dd,
