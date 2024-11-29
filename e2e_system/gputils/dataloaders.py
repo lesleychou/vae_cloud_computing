@@ -30,12 +30,13 @@ class DataFrameIter:
         
         # Check that every partition has a length.
         part_lens = [self.partition_lens[i] for i in self.indices if self.partition_lens[i] is not None]
-        if len(part_lens) < len(self.indices):
-            # Use metadata-based partition-size information
-            # if/when it is available.  Note that this metadata
-            # will not be correct if rows where added or dropped
-            # after IO (within Ops).
-            self.length = sum(self.partition_lens[i] for i in self.indices)
+        if len(part_lens) == len(self.indices):
+            # if len(part_lens) < len(self.indices):
+            #     # Use metadata-based partition-size information
+            #     # if/when it is available.  Note that this metadata
+            #     # will not be correct if rows where added or dropped
+            #     # after IO (within Ops).
+            self.length = sum(part_lens[i] for i in self.indices)
             return self.length
         # Computing length manually.
         if len(self.indices) < self.ddf.npartitions:
@@ -61,6 +62,7 @@ class DataFrameIter:
 
             # Is this here to make sure part gets GC'd?
             part = None
+            result = None
 
         self.length = length
 
@@ -80,7 +82,8 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         ddf,
         batch_size=1024,
         shuffle=False,
-        dtype=None
+        dtype=None,
+        keep_spill=True
     ):
         self.ddf = ddf
         self.shuffle = shuffle
@@ -93,6 +96,8 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         self.data = DataFrameIter(ddf)
         # Save the original indices of the data.
         self.indices = self.data.indices
+
+        self.keep_spill = keep_spill
 
     def __len__(self):
         num_batches = math.ceil(len(self.data) / self.batch_size)
@@ -141,6 +146,8 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
             if batches:
                 yield batches
             chunk = None
+            chunk_tensor = None
+            batches = None
         # Emit spillover.
         if spill is not None:
             yield [spill]
@@ -152,12 +159,14 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
         return tensor
     
     def batch_tensors(self, chunk_tensor):
-        """Splits larger tensor into list of batches. Creates some spill."""
+        """Splits larger tensor into list of batches. Creates some spill if keep_spill = True."""
         batches = list(torch.split(chunk_tensor, split_size_or_sections=self.batch_size))
         spill = None
         if len(batches) > 0:
             if batches[-1].shape[0] < self.batch_size:
-                spill = batches[-1]
+                # Have to clone otherwise spill will eat memory (?).
+                if self.keep_spill:
+                    spill = batches[-1].clone()
                 batches = batches[:-1]
         return batches, spill
     
@@ -165,8 +174,8 @@ class SequentialBatcher(torch.utils.data.IterableDataset):
 class ThreadedBatcher(SequentialBatcher):
     """Uses threads to prefetch partitions (and convert them to tensors) in the background."""
 
-    def __init__(self, ddf, batch_size=1024, shuffle=False, dtype=None, qsize=1):
-        super().__init__(ddf, batch_size, shuffle, dtype)
+    def __init__(self, ddf, batch_size=1024, shuffle=False, dtype=None, keep_spill=True, qsize=1):
+        super().__init__(ddf, batch_size, shuffle, dtype, keep_spill)
         self.batch_queue = queue.Queue(qsize)
         self.stop_event = threading.Event()
         self.thread = None
