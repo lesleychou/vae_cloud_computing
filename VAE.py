@@ -9,6 +9,9 @@ from opacus import PrivacyEngine
 from torch.distributions.normal import Normal
 
 from tqdm import tqdm
+import time
+import gc
+import sys
 
 
 class Encoder(nn.Module):
@@ -32,9 +35,15 @@ class Encoder(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             activation(),
-            nn.Linear(hidden_dim, hidden_dim),
+            # Try more layers.
+            nn.Linear(hidden_dim, hidden_dim // 2),
             activation(),
-            nn.Linear(hidden_dim, output_dim),
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            activation(),
+            nn.Linear(hidden_dim // 4, output_dim),
+            # nn.Linear(hidden_dim, hidden_dim),
+            # activation(),
+            # nn.Linear(hidden_dim, output_dim),
         )
 
     def forward(self, x):
@@ -70,11 +79,18 @@ class Decoder(nn.Module):
             print(f"Decoder: {device} specified, {self.device} used")
 
         self.net = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
+            nn.Linear(latent_dim, hidden_dim // 4),
             activation(),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim // 4, hidden_dim // 2),
+            activation(),
+            nn.Linear(hidden_dim // 2, hidden_dim),
             activation(),
             nn.Linear(hidden_dim, output_dim),
+            # nn.Linear(latent_dim, hidden_dim),
+            # activation(),
+            # nn.Linear(hidden_dim, hidden_dim),
+            # activation(),
+            # nn.Linear(hidden_dim, output_dim),
         )
 
     def forward(self, z):
@@ -96,7 +112,7 @@ class Noiser(nn.Module):
 class VAE(nn.Module):
     """Combines encoder and decoder into full VAE model"""
 
-    def __init__(self, encoder, decoder, lr=5e-4):
+    def __init__(self, encoder, decoder, lr=1e-3):
         super().__init__()
         self.encoder = encoder.to(encoder.device)
         self.decoder = decoder.to(decoder.device)
@@ -104,7 +120,7 @@ class VAE(nn.Module):
         self.num_categories = self.decoder.num_categories
         self.num_continuous = self.decoder.num_continuous
         # self.noiser = Noiser(self.num_continuous).to(decoder.device)
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr, betas=(0.95, 0.999))
         self.lr = lr
 
     def reconstruct(self, X):
@@ -147,7 +163,9 @@ class VAE(nn.Module):
 
         x_recon = self.decoder(z_samples)
 
-        categoric_loglik = 0
+        # Have to initialize this as a tensor with 0 instead of just 0 so that
+        # you can call Tensor.item() in train if there are no categoricals.
+        categoric_loglik = torch.Tensor([0]).to(self.device)
         if sum(self.num_categories) != 0:
             i = 0
 
@@ -169,7 +187,7 @@ class VAE(nn.Module):
             .sum()
         )
 
-        reconstruct_loss = -(categoric_loglik + gauss_loglik)
+        reconstruct_loss = -categoric_loglik - gauss_loglik
 
         elbo = divergence_loss + reconstruct_loss
 
@@ -199,6 +217,8 @@ class VAE(nn.Module):
         delta = delta  # Difference in elbo value
         min_reconstruction_loss = float('inf')  # Set initial minimum reconstruction loss
 
+        num_batches = len(x_dataloader)
+
         for epoch in range(n_epochs):
 
             train_loss = 0.0
@@ -207,7 +227,10 @@ class VAE(nn.Module):
             categorical_epoch_reconstruct = 0.0
             numerical_epoch_reconstruct = 0.0
 
+            n = 1
+
             for batch_idx, (Y_subset,) in enumerate(tqdm(x_dataloader)):
+                
                 self.optimizer.zero_grad()
                 (
                     elbo,
@@ -224,6 +247,7 @@ class VAE(nn.Module):
                 reconstruction_epoch_loss += reconstruct_loss.item()
                 categorical_epoch_reconstruct += categorical_reconstruc.item()
                 numerical_epoch_reconstruct += numerical_reconstruct.item()
+                n += Y_subset.shape[0]
 
                 mu_z, _ = self.encoder(Y_subset.to(self.encoder.device))  # Get latent features
 
@@ -231,6 +255,37 @@ class VAE(nn.Module):
                     min_reconstruction_loss = reconstruction_epoch_loss
                     if filepath is not None:
                         self.save(filepath)  # Save the model with latent features
+
+                if batch_idx % (num_batches // 5) == 0:
+                    stats = f'CURRENT METRICS (Epoch: {epoch}): \n \
+                    Elbo: {train_loss:11.2f} ({train_loss / n:.4f}). \n \
+                    Reconstruction Loss: {reconstruction_epoch_loss :11.2f} ({reconstruction_epoch_loss / n:.4f}). \n \
+                    KL Divergence: {divergence_epoch_loss:11.2f}. \n \
+                    Categorical Loss: {categorical_epoch_reconstruct:11.2f}. \n \
+                    Numerical Loss: {numerical_epoch_reconstruct:11.2f} \n \
+                    Max Reserved Memory: {torch.cuda.max_memory_reserved() / 1e+6:.2f} MB'
+
+                    tqdm.write(stats, end='\n')
+
+                # Trying to control memory usage.
+
+                # if batch_idx % 500 == 0:
+                #     print(sys.getrefcount(Y_subset))
+                #     print(sys.getrefcount(elbo))
+                #     print(sys.getrefcount(divergence_loss))
+                #     print(sys.getrefcount(reconstruct_loss))
+                #     print(sys.getrefcount(categorical_reconstruc))
+                #     print(sys.getrefcount(mu_z))
+
+                del Y_subset
+                del elbo
+                del divergence_loss
+                del reconstruct_loss
+                del categorical_reconstruc
+                del numerical_reconstruct
+                del mu_z
+
+                torch.cuda.empty_cache()
 
             log_elbo.append(train_loss)
             log_reconstruct.append(reconstruction_epoch_loss)
@@ -252,7 +307,12 @@ class VAE(nn.Module):
 
             if epoch % logging_freq == 0:
                 print(
-                    f"\tEpoch: {epoch:2}. Elbo: {train_loss:11.2f}. Reconstruction Loss: {reconstruction_epoch_loss:11.2f}. KL Divergence: {divergence_epoch_loss:11.2f}. Categorical Loss: {categorical_epoch_reconstruct:11.2f}. Numerical Loss: {numerical_epoch_reconstruct:11.2f}"
+                    f"\tEpoch: {epoch:2}. \
+                    Elbo: {train_loss:11.2f} ({train_loss / n:.4f}). \
+                    Reconstruction Loss: {reconstruction_epoch_loss:11.2f} ({reconstruction_epoch_loss / n:.4f}). \
+                    KL Divergence: {divergence_epoch_loss:11.2f}. \
+                    Categorical Loss: {categorical_epoch_reconstruct:11.2f}. \
+                    Numerical Loss: {numerical_epoch_reconstruct:11.2f}"
                 )
                 # print(f"\tMean norm: {mean_norm}")
             # self.mean_norm = mean_norm
