@@ -13,6 +13,13 @@ import cupy as cp
 import os
 
 
+COLS_TO_CLIP = {
+    'input_load': [0, 100],
+    'output_load': [0, 100],
+    'reliability': [0, 255]
+}
+
+
 def gpu_reverse_transformers(
     synthetic_set,
     original_cols,
@@ -39,14 +46,17 @@ def gpu_reverse_transformers(
 
         result = inverted
 
-        # Have to make this a list because to_dask_array does list comparisions internally.
-        one_hot_names = list(reordered_dataframe_columns[:-num_continuous])
+        # Only do this if there were any categoricals.
+        one_hot = cat_transformers.get('one_hot')
+        if one_hot is not None:
+            # Have to make this a list because to_dask_array does list comparisions internally.
+            one_hot_names = list(reordered_dataframe_columns[:-num_continuous])
 
-        one_hot = cat_transformers['one_hot']
-        vals = synthetic_set[one_hot_names].to_dask_array()
-        inverted_cats = one_hot.inverse_transform(vals)
+            one_hot = cat_transformers['one_hot']
+            vals = synthetic_set[one_hot_names].to_dask_array()
+            inverted_cats = one_hot.inverse_transform(vals)
 
-        result[original_categorical_columns] = inverted_cats
+            result[original_categorical_columns] = inverted_cats
 
         result = result[original_cols]
     else:
@@ -66,6 +76,7 @@ def generate_large_data(
         original_continuous_columns, 
         original_categorical_columns, 
         num_continuous,
+        batch_size=1024,
         size=None
     ):
     if not size:
@@ -73,23 +84,31 @@ def generate_large_data(
 
     num_parts = X_train.npartitions
     # Torch takes a lot of memory, so need to reduce size of batch generated at each time.
-    step = size // (num_parts * 5)
+    chunk_size = size // (num_parts * 1)
 
     out_path = config.syn_data_save_dir
 
     file_num = 0
 
     print('Writing output to files...')
-    for i in tqdm(range(0, size, step)):
+    # Have to do inference batch by batch otherwise memory explodes.
+    for i in tqdm(range(0, size, chunk_size)):
         # Generate synthetic data with X_train
-        chunk_size = min(step, size - i)
-        syn_sample = vae_model.generate(chunk_size)
+        chunk_step = min(chunk_size, size - i)
+        batch_tensors = []
+        for j in range(0, chunk_step, batch_size):
+            batch_step = min(batch_size, chunk_step - j)
+            with torch.inference_mode():
+                batch = vae_model.generate(batch_step)
+            batch_tensors.append(batch)
+
+        syn_sample = torch.concat(batch_tensors)
             
         if torch.cuda.is_available():
-            syn_sample = cp.fromDlpack(torch.utils.dlpack.to_dlpack(syn_sample))
+            syn_sample = cp.from_dlpack(syn_sample)
             syn_sample = cudf.DataFrame(syn_sample)
             syn_sample.columns = reordered_dataframe_columns
-            syn_sample = dask_cudf.from_cudf(syn_sample)
+            syn_sample = dask_cudf.from_cudf(syn_sample, npartitions=1)
         else:
             syn_sample = pd.DataFrame(
                 syn_sample.cpu().detach().numpy(),
@@ -108,6 +127,19 @@ def generate_large_data(
             original_categorical_columns=original_categorical_columns,
             num_continuous=num_continuous
         )
+
+        # TODO: Find way to not hardcode this.
+        # Squishing values to their ranges.
+        # for col in output.columns:
+        #     clipping = {'lower': 0, 'upper': None}
+        #     if col in COLS_TO_CLIP:
+        #         bounds = COLS_TO_CLIP[col]
+        #         clipping['lower'] = bounds[0]
+        #         clipping['upper'] = bounds[1]
+        #     output[col] = output[col].clip(**clipping)
+
+        # Apparently cudf does not support axis for dd.clip()...
+        output = output.round(0)
 
         # TODO: Is there a better way than writing one file at a time?
         out_file = os.path.join(out_path, f'syn_out_{file_num}.csv')

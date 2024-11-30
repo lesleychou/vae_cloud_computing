@@ -19,6 +19,7 @@ def create_loader(
         batch_size=1024,
         dtype=None,
         threaded=False,
+        keep_spill=True,
         **kwargs
 ):
     """
@@ -32,7 +33,8 @@ def create_loader(
     dataset = Batcher(
         ddf=transformed_ds, 
         batch_size=batch_size,
-        dtype=dtype
+        dtype=dtype,
+        keep_spill=keep_spill
     )
 
     data_loader = DataLoader(
@@ -40,6 +42,7 @@ def create_loader(
         batch_size=None,
         **kwargs
     )
+    data_loader = dataset
     return data_loader
 
 
@@ -47,6 +50,8 @@ def nvt_read_data(
         input_file_paths, 
         excluded_cols=['time'], 
         dtype=None,
+        file_format='csv',
+        categoricals='auto',
         **kwargs
 ):
     """
@@ -55,9 +60,13 @@ def nvt_read_data(
     """
     if not dtype:
         dtype = 'float32'
+    
+    reader = dd.read_csv
+    if file_format == 'parquet':
+        reader = dd.read_parquet
         
     # Getting the ddf (Dask Dataframe) to compute statistics.
-    ddf = dd.read_csv(
+    ddf = reader(
         input_file_paths,
         **kwargs
     ).astype(dtype)
@@ -70,17 +79,25 @@ def nvt_read_data(
     original_categorical_columns = []
     # Maybe we should emit this as well
     categorical_len_count = 0
-    # Preprocessing (mirrors vanilla read_data method).
+    # Find categorical columns automatically. If not, assume
+    # all columns are continuous.
     columns = list(ddf.columns)
-    for col in tqdm(columns):
-        # Do not process the value
-        n_uniques = ddf[col].unique().compute()
-        num_cats = len(n_uniques)
-        if num_cats <= 10:
-            original_categorical_columns.append(col)
-            categorical_len_count += num_cats
+    if categoricals == 'auto':
+        for col in tqdm(columns):
+            # Do not process the value
+            n_uniques = ddf[col].unique().compute()
+            num_cats = len(n_uniques)
+            if num_cats <= 10:
+                original_categorical_columns.append(col)
+                categorical_len_count += num_cats
+            else:
+                original_continuous_columns.append(col)
+    else:
+        if isinstance(categoricals, list):
+            original_categorical_columns = categoricals
+            original_continuous_columns = [col for col in columns if col not in categoricals]
         else:
-            original_continuous_columns.append(col)
+            original_continuous_columns = columns
 
     # Should we write to disk like in the original? Idk if we have the
     # disk space for that. Maybe we make that optional.
@@ -97,6 +114,7 @@ def gpu_preproc(
         original_continuous_columns,
         original_categorical_columns,
         pre_proc_method='standard',
+        file_format='csv',
         output_dtype='float32'
 ):
     # Specify column configurations
@@ -116,11 +134,6 @@ def gpu_preproc(
     categorical_transformers = {}
 
     transformed_dataset = data_supp
-
-    # Convert categoricals (assumed to be numeric) to dtype int. Is this to avoid floating pt error?
-    categorical_part = transformed_dataset[categorical_columns].astype(int)
-    num_categories = categorical_part.nunique().compute()
-    num_categories = list(num_categories.values)
 
     if pre_proc_method == "standard":
         # Fit cuML standard scaler to all continuous columns.
@@ -145,20 +158,34 @@ def gpu_preproc(
 
     num_continuous = len(continuous_columns)
 
-    # Make one hot columns out of categorical features.
-    one_hot_encoder = CumlOneHotEncoder(sparse_output=False)
-    temp_columns = transformed_dataset[categorical_columns]
-    one_hot_arr = one_hot_encoder.fit_transform(temp_columns)
-    categorical_transformers["one_hot"] = one_hot_encoder
+    # Process categorical columns
+    one_hot_names = []
+    num_categories = []
+    if categorical_columns:
 
-    # Get names for one hot categorical features.
-    one_hot_names = list(one_hot_encoder.get_feature_names(categorical_columns))
+        # Convert categoricals (assumed to be numeric) to dtype int. Is this to avoid floating pt error?
+        categorical_part = transformed_dataset[categorical_columns].astype(int)
+        num_categories = categorical_part.nunique().compute()
+        num_categories = list(num_categories.values)
 
-    # Move one hot features to DataFrame so we can reorder with continuous features.
-    # Assign columns individually to preserve ddf index alignment.
-    one_hot_arr.compute_chunk_sizes()
-    for i, col in enumerate(one_hot_names):
-        transformed_dataset[col] = one_hot_arr[:, i]
+        # One hot encode.
+        one_hot_encoder = CumlOneHotEncoder(sparse_output=False)
+        temp_columns = transformed_dataset[categorical_columns]
+        one_hot_arr = one_hot_encoder.fit_transform(temp_columns)
+        categorical_transformers["one_hot"] = one_hot_encoder
+
+        # Get names for one hot categorical features.
+        one_hot_names = list(one_hot_encoder.get_feature_names(categorical_columns))
+
+        # Move one hot features to DataFrame so we can reorder with continuous features.
+        # Assign columns individually to preserve ddf index alignment.
+        one_hot_arr.compute_chunk_sizes()
+        if file_format == 'parquet':
+            # CuML fit_transform doesn't preserve parquet partitions.
+            num_elts = len(transformed_dataset)
+            one_hot_arr = one_hot_arr.rechunk((num_elts // transformed_dataset.npartitions, None), balance=True)
+        for i, col in enumerate(one_hot_names):
+            transformed_dataset[col] = one_hot_arr[:, i]
 
 
     # We need the dataframe in the correct format i.e. categorical variables first and in the order of
