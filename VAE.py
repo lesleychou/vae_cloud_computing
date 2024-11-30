@@ -243,10 +243,10 @@ class VAE(nn.Module):
                 self.optimizer.step()
 
                 train_loss += elbo.item()
-                divergence_epoch_loss += divergence_loss.detach().item()
-                reconstruction_epoch_loss += reconstruct_loss.detach().item()
-                categorical_epoch_reconstruct += categorical_reconstruc.detach().item()
-                numerical_epoch_reconstruct += numerical_reconstruct.detach().item()
+                divergence_epoch_loss += divergence_loss.item()
+                reconstruction_epoch_loss += reconstruct_loss.item()
+                categorical_epoch_reconstruct += categorical_reconstruc.item()
+                numerical_epoch_reconstruct += numerical_reconstruct.item()
                 n += Y_subset.shape[0]
 
                 mu_z, _ = self.encoder(Y_subset.to(self.encoder.device))  # Get latent features
