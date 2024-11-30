@@ -115,7 +115,8 @@ def gpu_preproc(
         original_categorical_columns,
         pre_proc_method='standard',
         file_format='csv',
-        output_dtype='float32'
+        output_dtype='float32',
+        categories=None
 ):
     # Specify column configurations
     # original_categorical_columns = [
@@ -169,7 +170,11 @@ def gpu_preproc(
         num_categories = list(num_categories.values)
 
         # One hot encode.
-        one_hot_encoder = CumlOneHotEncoder(sparse_output=False)
+        cats = 'auto'
+        if categories is not None:
+            cats = categories
+
+        one_hot_encoder = CumlOneHotEncoder(sparse_output=False, categories=cats)
         temp_columns = transformed_dataset[categorical_columns]
         one_hot_arr = one_hot_encoder.fit_transform(temp_columns)
         categorical_transformers["one_hot"] = one_hot_encoder

@@ -116,6 +116,10 @@ def main(config: Config):
     client = Client(cluster)
     dask.config.set({"dataframe.backend": 'cudf'})
 
+    print(f'Dashboard: {client.dashboard_link}')
+
+    sys.stdout.flush()
+
     # if config.output_processed_data_path does not exist, create the directory
     if not os.path.exists(config.output_processed_data_save_dir):
         os.makedirs(config.output_processed_data_save_dir)
@@ -125,8 +129,9 @@ def main(config: Config):
     # Read data. Calculate number of unique values -> determines categorical columns.
     # TODO: Maybe we add the option of specifying categoricals to save time.
     train_df, original_continuous_columns, original_categorical_columns = nvt_read_data(
-        input_file_paths=[config.input_data_path for _ in range(2)],
-        blocksize='250MB'
+        input_file_paths=config.input_data_path,
+        categoricals=False,
+        file_format='parquet'
     )
     # Save original columns (useful for data processing and formatting output).
     original_cols = list(train_df.columns)
@@ -136,8 +141,13 @@ def main(config: Config):
     pre_proc_method = config.pre_proc_method
     print(f'Preprocessing Method: {pre_proc_method}')
 
+    sys.stdout.flush()
+
     # TODO: Should this also return the names of the new columns?
     # Does the reverse_transformers() need to know the column names?
+
+    # categories = cudf.DataFrame({'reliability': [250.0, 251.0, 252.0, 253.0, 254.0, 255.0]})
+
     (
         original_input_transformed,
         reordered_dataframe_columns,
@@ -149,7 +159,9 @@ def main(config: Config):
         train_df,
         original_continuous_columns,
         original_categorical_columns,
-        pre_proc_method=pre_proc_method
+        pre_proc_method=pre_proc_method,
+        file_format='parquet',
+        categories=None
     )
 
     # original_input_transformed.visualize(filename='task_graph.svg')
@@ -159,12 +171,15 @@ def main(config: Config):
     print("Input data shape: ", X_train.shape[1])
     print(f'Partitions: {X_train.npartitions}')
 
+    sys.stdout.flush()
+
     vae, encoder, decoder = train(
         config, 
         X_train, 
         num_continuous, 
         num_categories,
-        threaded=True
+        threaded=True,
+        keep_spill=False
     )
 
     load_vae = VAE(encoder, decoder)
@@ -183,7 +198,8 @@ def main(config: Config):
         categorical_transformers,
         original_continuous_columns,
         original_categorical_columns,
-        num_continuous
+        num_continuous,
+        batch_size=config.batch_size
     )
     print("Output written.")
 
@@ -191,8 +207,33 @@ def main(config: Config):
 if __name__ == '__main__':
     config = Config()
 
+    # torch.autograd.set_detect_anomaly(True)
+    # from torch.utils.viz._cycles import warn_tensor_cycles
+    # warn_tensor_cycles()
+
     # TODO: Maybe make Config take command line args.
     config.pre_proc_method = 'standard'
     config.n_epochs = 1
+    config.input_data_path = '/home/azureuser/datadrive/traffic/'
+    # config.input_data_path = [
+    #     # '/home/azureuser/datadrive/traffic/train_traffic',
+    #     '/home/azureuser/datadrive/traffic/train_traffic-15000000.parquet',
+    #     '/home/azureuser/datadrive/traffic/train_traffic-20000000.parquet',
+    #     '/home/azureuser/datadrive/traffic/train_traffic-25000000.parquet',
+    #     '/home/azureuser/datadrive/traffic/train_traffic-30000000.parquet',
+    #     '/home/azureuser/datadrive/traffic/train_traffic-35000000.parquet',
+    #     '/home/azureuser/datadrive/traffic/train_traffic-40000000.parquet',
+    #     '/home/azureuser/datadrive/traffic/train_traffic-45000000.parquet',
+    #     '/home/azureuser/datadrive/traffic/train_traffic-50000000.parquet',
+    #     ]
+
+    config.syn_data_save_dir = '/home/azureuser/datadrive/syn_traffic'
+    config.filepath = 'shadowtraffic_vae_60g.pth'
+
+    config.batch_size = 1024
+    config.hidden_dim = 512
+    config.latent_dim = 32
+
+    config.patience = 3
 
     main(config)
