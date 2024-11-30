@@ -243,10 +243,10 @@ class VAE(nn.Module):
                 self.optimizer.step()
 
                 train_loss += elbo.item()
-                divergence_epoch_loss += divergence_loss.item()
-                reconstruction_epoch_loss += reconstruct_loss.item()
-                categorical_epoch_reconstruct += categorical_reconstruc.item()
-                numerical_epoch_reconstruct += numerical_reconstruct.item()
+                divergence_epoch_loss += divergence_loss.detach().item()
+                reconstruction_epoch_loss += reconstruct_loss.detach().item()
+                categorical_epoch_reconstruct += categorical_reconstruc.detach().item()
+                numerical_epoch_reconstruct += numerical_reconstruct.detach().item()
                 n += Y_subset.shape[0]
 
                 mu_z, _ = self.encoder(Y_subset.to(self.encoder.device))  # Get latent features
@@ -267,15 +267,9 @@ class VAE(nn.Module):
 
                     tqdm.write(stats, end='\n')
 
-                # Trying to control memory usage.
+                    sys.stdout.flush()
 
-                # if batch_idx % 500 == 0:
-                #     print(sys.getrefcount(Y_subset))
-                #     print(sys.getrefcount(elbo))
-                #     print(sys.getrefcount(divergence_loss))
-                #     print(sys.getrefcount(reconstruct_loss))
-                #     print(sys.getrefcount(categorical_reconstruc))
-                #     print(sys.getrefcount(mu_z))
+                # Trying to control memory usage.
 
                 del Y_subset
                 del elbo
