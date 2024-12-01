@@ -7,6 +7,10 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from config import Config
 import os
+from tqdm import tqdm
+from DataSynthesizer.DataDescriber import DataDescriber
+from collections import defaultdict, deque
+
 
 # VAE is in other folder as well as opacus adapted library
 import sys
@@ -18,7 +22,8 @@ from opacus.utils.uniform_sampler import UniformWithReplacementSampler
 from torch.utils.data import TensorDataset, DataLoader
 
 # VAE functions
-from VAE import Decoder, Encoder, VAE
+# from VAE import Decoder, Encoder, VAE 
+from HVAE import Decoder, Encoder, HierarchicalVAE
 
 # Utility file contains all functions required to run notebook
 from utils import (
@@ -59,6 +64,64 @@ def read_data(input_data_filepath, output_data_path):
     return input_df, original_continuous_columns, original_categorical_columns
 
 
+def build_bayesian_network(input_data_path, original_categorical_columns, degree_of_bayesian_network=2, epsilon=2):
+        threshold_value = 10
+
+        dict_categorical_columns = {item: True for item in original_categorical_columns}
+        categorical_attributes = dict_categorical_columns
+
+        describer = DataDescriber(category_threshold=threshold_value)
+        bn_structure = describer.describe_dataset_in_correlated_attribute_mode(dataset_file=input_data_path, 
+                                                                epsilon=epsilon, 
+                                                                k=degree_of_bayesian_network,
+                                                                attribute_to_is_categorical=categorical_attributes)
+
+        return bn_structure
+
+def calculate_latent_dim_hierarchy(bn_structure):
+    # Build a graph of the BN structure
+    graph = defaultdict(list)
+    inverse_graph = defaultdict(list)
+    all_nodes = set()
+    
+    for parent, children in bn_structure:
+        all_nodes.add(parent)
+        all_nodes.update(children)
+        for child in children:
+            graph[parent].append(child)
+            inverse_graph[child].append(parent)
+    
+    # Initialize a queue for BFS and a dictionary to track the layer of each node
+    layer = {}
+    queue = deque()
+    
+    # Start with input nodes (nodes that have no parents)
+    for node in all_nodes:
+        if len(inverse_graph[node]) == 0:  # Input node (no parents)
+            layer[node] = 0
+            queue.append(node)
+    
+    # Perform BFS to assign layers
+    while queue:
+        node = queue.popleft()
+        current_layer = layer[node]
+        
+        for neighbor in graph[node]:
+            if neighbor not in layer:  # If the neighbor hasn't been assigned a layer yet
+                layer[neighbor] = current_layer + 1
+                queue.append(neighbor)
+    
+    # Count how many nodes exist at each layer
+    layer_counts = defaultdict(int)
+    for node in layer:
+        layer_counts[layer[node]] += 1
+    
+    # Create the latent_dim_hierarchy list, which represents the size of each layer
+    latent_dim_hierarchy = [layer_counts[i] for i in range(max(layer.values()) + 1)]
+    
+    return latent_dim_hierarchy
+
+
 def train(config, X_train, num_continuous, num_categories):
 
     # Prepare data for interaction with torch VAE
@@ -77,10 +140,10 @@ def train(config, X_train, num_continuous, num_categories):
     )
 
     # Create VAE
-    encoder = Encoder(X_train.shape[1], config.latent_dim, hidden_dim=config.hidden_dim)
-    decoder = Decoder(config.latent_dim, num_continuous, hidden_dim=config.hidden_dim, num_categories=num_categories)
+    encoder = Encoder(X_train.shape[1], latent_dim_hierarchy=[4, 8, 20], hidden_dim=config.hidden_dim)
+    decoder = Decoder([4, 8, 20], num_continuous, hidden_dim=config.hidden_dim, num_categories=num_categories)
 
-    vae = VAE(encoder, decoder)
+    vae = HierarchicalVAE(encoder, decoder, latent_dim_hierarchy=[4, 8, 20])
 
     print(vae)
 
@@ -96,10 +159,25 @@ def train(config, X_train, num_continuous, num_categories):
             data_loader,
             n_epochs=config.n_epochs,
             logging_freq=config.logging_freq,
-            patience=config.patience,
-            delta=config.delta,
             filepath=config.filepath
         )
+
+    # if config.differential_privacy == False:
+    #     (
+    #         training_epochs,
+    #         log_elbo,
+    #         log_reconstruction,
+    #         log_divergence,
+    #         log_categorical,
+    #         log_numerical,
+    #     ) = vae.train(
+    #         data_loader,
+    #         n_epochs=config.n_epochs,
+    #         logging_freq=config.logging_freq,
+    #         patience=config.patience,
+    #         delta=config.delta,
+    #         filepath=config.filepath
+    #     )
 
     elif config.differential_privacy == True:
         (
@@ -171,6 +249,12 @@ def main(config):
     print("Continuous columns: ", original_continuous_columns)
     print("Categorical columns: ", original_categorical_columns)
 
+    bn_structure = build_bayesian_network(config.output_processed_data_path, original_categorical_columns, degree_of_bayesian_network=2, epsilon=2)
+    print("Bayesian network structure: ", bn_structure)
+
+    hierarchy_indices = calculate_latent_dim_hierarchy(bn_structure)
+    print(hierarchy_indices)
+
     pre_proc_method = "GMM"
 
     (
@@ -191,10 +275,10 @@ def main(config):
 
     vae, encoder, decoder = train(config, X_train, num_continuous, num_categories)
 
-    load_vae = VAE(encoder, decoder)
-    load_vae.load_state_dict(torch.load(config.filepath))
+    # load_vae = HierarchicalVAE(encoder, decoder)
+    # load_vae.load_state_dict(torch.load(config.filepath))
 
-    syn_generated_data = generate_diff_size(config, load_vae, X_train, train_df,
+    syn_generated_data = generate_diff_size(config, vae, X_train, train_df,
                                             reordered_dataframe_columns, continuous_transformers, categorical_transformers, size=None)
     syn_generated_data.to_csv(config.syn_data_path, index=False)
 

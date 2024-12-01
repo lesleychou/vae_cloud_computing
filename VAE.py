@@ -10,7 +10,6 @@ from torch.distributions.normal import Normal
 
 from tqdm import tqdm
 
-
 class Encoder(nn.Module):
     """Encoder, takes in x
     and outputs mu_z, sigma_z
@@ -91,7 +90,6 @@ class Noiser(nn.Module):
 
     def forward(self, X):
         return self.output_logsigma_fn(X)
-
 
 class VAE(nn.Module):
     """Combines encoder and decoder into full VAE model"""

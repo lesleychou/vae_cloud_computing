@@ -10,7 +10,7 @@ class Config():
         self.project_dir = os.path.dirname(os.path.abspath(__file__))
         self.pre_proc_method = "GMM"
         # General training hyperparams
-        self.batch_size = 1000
+        self.batch_size = 100
         self.latent_dim = 12
         self.hidden_dim = 512
         self.n_epochs = 10
