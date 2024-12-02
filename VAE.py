@@ -18,7 +18,7 @@ class Encoder(nn.Module):
     """
 
     def __init__(
-        self, input_dim, latent_dim, hidden_dim=32, activation=nn.Tanh, device="gpu",
+        self, input_dim, latent_dim, hidden_dim=32, activation=nn.Tanh, device="cpu",
     ):
         super().__init__()
         if device == "gpu":
@@ -53,7 +53,7 @@ class Decoder(nn.Module):
         num_categories=[0],
         hidden_dim=32,
         activation=nn.Tanh,
-        device="gpu",
+        device="cpu",
     ):
         super().__init__()
 
@@ -149,33 +149,45 @@ class VAE(nn.Module):
 
         x_recon = self.decoder(z_samples)
 
-        categoric_loglik = 0
-        if sum(self.num_categories) != 0:
-            i = 0
+        # Define tail thresholds
+        continuous_tail_threshold = torch.quantile(X[:, -self.num_continuous:], 0.95, dim=0)
+        alpha_tail = 2.0  # Weight for tail values
+        alpha_non_tail = 1.0  # Weight for non-tail values
 
-            for v in range(len(self.num_categories)):
-                # import pdb; pdb.set_trace()
+        # Tail-aware continuous loss
+        continuous_data = X[:, -self.num_continuous:]
+        continuous_recon = x_recon[:, -self.num_continuous:]
 
-                categoric_loglik += -torch.nn.functional.cross_entropy(
-                    x_recon[:, i : (i + self.num_categories[v])],
-                    torch.max(X[:, i : (i + self.num_categories[v])], 1)[1],
-                ).sum()
-                i = i + self.decoder.num_categories[v]
+        is_tail = continuous_data > continuous_tail_threshold  # Boolean mask for tail values
+        weights_continuous = torch.where(is_tail, alpha_tail, alpha_non_tail)  # Apply weights
 
         gauss_loglik = (
             Normal(
-                loc=x_recon[:, -self.num_continuous:],
-                scale=torch.ones_like(x_recon[:, -self.num_continuous:]),
+                loc=continuous_recon,
+                scale=torch.ones_like(continuous_recon),
             )
-            .log_prob(X[:, -self.num_continuous:])
-            .sum()
-        )
+            .log_prob(continuous_data)
+            .sum(dim=1)  # Sum over features
+            * weights_continuous.sum(dim=1)  # Apply weights
+        ).sum()  # Sum over the batch
+
+        # Tail-aware categorical loss
+        categoric_loglik = 0
+        if sum(self.num_categories) != 0:
+            i = 0
+            for v in range(len(self.num_categories)):
+                # No explicit "tail" handling for categorical data unless predefined rare categories exist
+                categoric_loglik += -torch.nn.functional.cross_entropy(
+                    x_recon[:, i:(i + self.num_categories[v])],
+                    torch.max(X[:, i:(i + self.num_categories[v])], 1)[1],
+                ).sum()
+                i = i + self.num_categories[v]
 
         reconstruct_loss = -(categoric_loglik + gauss_loglik)
 
         elbo = reconstruct_loss
 
-        return (elbo, reconstruct_loss, divergence_loss, categoric_loglik, gauss_loglik)
+        return elbo, reconstruct_loss, divergence_loss, categoric_loglik, gauss_loglik
 
     def train(
         self,
