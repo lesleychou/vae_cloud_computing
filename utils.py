@@ -17,7 +17,53 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+# Uniform Quantization
+def uniform_quantization(data, num_levels):
+    """
+    Perform uniform quantization on the given data.
+    
+    Args:
+    - data (array-like): Continuous data to be quantized.
+    - num_levels (int): The number of quantization levels.
 
+    Returns:
+    - quantized_data (array-like): The quantized data.
+    """
+    # Find the min and max of the data
+    data_min = np.min(data)
+    data_max = np.max(data)
+    
+    # Calculate the quantization step (interval between quantization levels)
+    step = (data_max - data_min) / (num_levels - 1)
+    
+    # Assign each data point to the nearest quantization level
+    quantized_data = np.round((data - data_min) / step) * step + data_min
+    
+    return quantized_data, data_min, step
+
+# Reverse Uniform Quantization
+def reverse_uniform_quantization(quantized_data, data_min, data_max, step):
+    """
+    Reverse the uniform quantization process by mapping quantized values back to continuous values.
+    
+    Args:
+    - quantized_data (array-like): The quantized data.
+    - data_min (float): The minimum value of the original continuous data.
+    - step (float): The quantization step.
+    
+    Returns:
+    - original_data (array-like): The reconstructed continuous data.
+    """
+    # Map each quantized value back to the continuous value by adding the min and scaling by step
+    original_data = quantized_data * step + data_min
+    # Adjust the reconstructed range to be exactly the same as the original range
+    reconstructed_min = np.min(original_data)
+    reconstructed_max = np.max(original_data)
+    
+    # Rescale the reconstructed data to the original range
+    rescaled_data = data_min + (original_data - reconstructed_min) * (data_max - data_min) / (reconstructed_max - reconstructed_min)
+    
+    return rescaled_data
 # -------- Pre-Processing for MIMIC sets -------- #
 # Internal sets provided by NHSX - outside users will have to stick with SUPPORT set
 
@@ -89,6 +135,21 @@ def mimic_pre_proc(data_supp, original_continuous_columns, original_categorical_
             transformed_dataset[column] = (
                 temp_continuous.transform(temp_column)
             ).flatten()
+
+    elif pre_proc_method == "log_transform":
+
+        for index, column in enumerate(continuous_columns):
+            # Apply log transformation to each column
+            temp_column = transformed_dataset[column].values
+            log_transformed_data = np.log1p(temp_column)  # log1p is used to handle zero values
+            
+            # Store the log transformation parameters for reverse transformation
+            continuous_transformers["continuous_{}".format(column)] = {
+                "original_min": temp_column.min()
+            }
+            
+            transformed_dataset[column] = log_transformed_data
+
 
     num_categories = []
 
@@ -177,7 +238,6 @@ def reverse_transformers(
         if pre_proc_method == "GMM":
 
             for transformer_name in cont_transformers:
-
                 transformer = cont_transformers[transformer_name]
                 column_name = transformer_name[11:]
 
@@ -197,9 +257,22 @@ def reverse_transformers(
                     column_name
                 ] = transformer.inverse_transform(
                     synthetic_transformed_set[column_name].values.reshape(
-                        -1, 1
+                    -1, 1
                     )
                 ).flatten()
+        
+        elif pre_proc_method == "log_transform":
+
+            for transformer_name in cont_transformers:
+
+                column_name = transformer_name[11:]
+                log_transformed_data = synthetic_transformed_set[column_name].values
+                
+                # Reverse the log transformation
+                original_data = np.expm1(log_transformed_data)  # expm1 is used to handle zero values
+                
+                synthetic_transformed_set[column_name] = original_data
+            
 
     if date_transformers != None:
         for transformer_name in date_transformers:

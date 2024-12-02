@@ -171,7 +171,7 @@ def main(config):
     print("Continuous columns: ", original_continuous_columns)
     print("Categorical columns: ", original_categorical_columns)
 
-    pre_proc_method = "GMM"
+    pre_proc_method = "standard"
 
     (
         original_input_transformed,

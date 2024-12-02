@@ -29,21 +29,20 @@ class Encoder(nn.Module):
             print(f"Encoder: {device} specified, {self.device} used")
         output_dim = 2 * latent_dim
         self.latent_dim = latent_dim
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            activation(),
-            nn.Linear(hidden_dim, hidden_dim),
-            activation(),
-            nn.Linear(hidden_dim, output_dim),
-        )
+        self.lstm = nn.LSTM(input_dim, hidden_dim)
+        self.linear = nn.Linear(hidden_dim, output_dim)
+        # how to put lstm to the self.net
+        # self.net.add_module("lstm", nn.LSTM(hidden_dim, hidden_dim, batch_first=True))
 
     def forward(self, x):
-        outs = self.net(x)
+        # outs = self.net(x)
+        lstm_out, _ = self.lstm(x)
+        outs = self.linear(lstm_out)
         mu_z = outs[:, : self.latent_dim]
         logsigma_z = outs[:, self.latent_dim :]
         return mu_z, logsigma_z
 
-
+        
 class Decoder(nn.Module):
     """Decoder, takes in z and outputs reconstruction"""
 
@@ -69,17 +68,20 @@ class Decoder(nn.Module):
             self.device = torch.device("cpu")
             print(f"Decoder: {device} specified, {self.device} used")
 
-        self.net = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            activation(),
-            nn.Linear(hidden_dim, hidden_dim),
-            activation(),
-            nn.Linear(hidden_dim, output_dim),
-        )
+        # self.net = nn.Sequential(
+        #     nn.Linear(latent_dim, hidden_dim),
+        #     activation(),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     activation(),
+        #     nn.Linear(hidden_dim, output_dim),
+        # )
+        self.lstm = nn.LSTM(latent_dim, hidden_dim)
+        self.linear = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, z):
-        return self.net(z)
-
+        lstm_out, _ = self.lstm(z)
+        outs = self.linear(lstm_out)
+        return outs
 
 class Noiser(nn.Module):
     def __init__(self, num_continuous):
@@ -96,7 +98,7 @@ class Noiser(nn.Module):
 class VAE(nn.Module):
     """Combines encoder and decoder into full VAE model"""
 
-    def __init__(self, encoder, decoder, lr=5e-4):
+    def __init__(self, encoder, decoder, lr=1e-3):
         super().__init__()
         self.encoder = encoder.to(encoder.device)
         self.decoder = decoder.to(decoder.device)
@@ -143,7 +145,7 @@ class VAE(nn.Module):
         divergence_loss = torch.sum(torch.distributions.kl_divergence(q, p))
 
         s = torch.randn_like(mu_z)
-        z_samples = mu_z + s * torch.exp(logsigma_z)
+        z_samples = mu_z
 
         x_recon = self.decoder(z_samples)
 
@@ -171,7 +173,7 @@ class VAE(nn.Module):
 
         reconstruct_loss = -(categoric_loglik + gauss_loglik)
 
-        elbo = divergence_loss + reconstruct_loss
+        elbo = reconstruct_loss
 
         return (elbo, reconstruct_loss, divergence_loss, categoric_loglik, gauss_loglik)
 
