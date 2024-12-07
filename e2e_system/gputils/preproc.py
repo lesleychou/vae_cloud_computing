@@ -77,8 +77,6 @@ def nvt_read_data(
 
     original_continuous_columns = []
     original_categorical_columns = []
-    # Maybe we should emit this as well
-    categorical_len_count = 0
     # Find categorical columns automatically. If not, assume
     # all columns are continuous.
     columns = list(ddf.columns)
@@ -89,15 +87,13 @@ def nvt_read_data(
             num_cats = len(n_uniques)
             if num_cats <= 10:
                 original_categorical_columns.append(col)
-                categorical_len_count += num_cats
             else:
                 original_continuous_columns.append(col)
+    elif isinstance(categoricals, list):
+        original_categorical_columns = categoricals
+        original_continuous_columns = [col for col in columns if col not in categoricals]
     else:
-        if isinstance(categoricals, list):
-            original_categorical_columns = categoricals
-            original_continuous_columns = [col for col in columns if col not in categoricals]
-        else:
-            original_continuous_columns = columns
+        original_continuous_columns = columns
 
     # Should we write to disk like in the original? Idk if we have the
     # disk space for that. Maybe we make that optional.
