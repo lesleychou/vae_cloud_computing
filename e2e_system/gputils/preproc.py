@@ -114,7 +114,7 @@ def gpu_preproc(
         original_continuous_columns,
         original_categorical_columns,
         pre_proc_method='standard',
-        file_format='csv',
+        rechunk=False,
         output_dtype='float32',
         categories=None
 ):
@@ -185,7 +185,7 @@ def gpu_preproc(
         # Move one hot features to DataFrame so we can reorder with continuous features.
         # Assign columns individually to preserve ddf index alignment.
         one_hot_arr.compute_chunk_sizes()
-        if file_format == 'parquet':
+        if rechunk:
             # CuML fit_transform doesn't preserve parquet partitions.
             num_elts = len(transformed_dataset)
             one_hot_arr = one_hot_arr.rechunk((num_elts // transformed_dataset.npartitions, None), balance=True)

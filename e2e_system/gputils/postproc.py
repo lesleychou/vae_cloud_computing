@@ -86,8 +86,6 @@ def generate_large_data(
     # Torch takes a lot of memory, so need to reduce size of batch generated at each time.
     chunk_size = size // (num_parts * 1)
 
-    out_path = config.syn_data_save_dir
-
     file_num = 0
 
     print('Writing output to files...')
@@ -142,11 +140,12 @@ def generate_large_data(
         output = output.round(0)
 
         # TODO: Is there a better way than writing one file at a time?
-        out_file = os.path.join(out_path, f'syn_out_{file_num}.csv')
-        output.to_csv(
-            out_file, 
-            index=False,
-            single_file=True
+        out_path = config.syn_data_save_dir
+        out_file = lambda _: f'syn_out_{file_num}.parquet'
+        output.to_parquet(
+            out_path, 
+            index=True,
+            name_function=out_file
         )
 
         file_num += 1
