@@ -6,7 +6,7 @@ import torch.nn as nn
 from opacus import PrivacyEngine
 
 # from torch.distributions.bernoulli import Bernoulli
-from torch.distributions.normal import Normal
+from torch.distributions import StudentT, Normal
 
 from tqdm import tqdm
 import pandas as pd
@@ -84,20 +84,25 @@ class HierarchicalVAE(nn.Module):
                 ).sum()
                 i = i + self.decoder.num_categories[v]
 
-        gauss_loglik = (
-            Normal(
-                loc=x_recon[:, -self.num_continuous:],
-                scale=torch.ones_like(x_recon[:, -self.num_continuous:]),
-            )
-            .log_prob(X[:, -self.num_continuous:])
-            .sum()
-        )
+        # gauss_loglik = (
+        #     Normal(
+        #         loc=x_recon[:, -self.num_continuous:],
+        #         scale=torch.ones_like(x_recon[:, -self.num_continuous:]),
+        #     )
+        #     .log_prob(X[:, -self.num_continuous:])
+        #     .sum()
+        # )
 
-        reconstruct_loss = -(categoric_loglik + gauss_loglik)
+        # Use StudentT for heavy-tailed reconstruction
+        df = 3.0  # Degrees of freedom (lower = heavier tails, >2 ensures finite variance)
+        t_dist = StudentT(df, loc=x_recon[:, -self.num_continuous:], scale=torch.ones_like(x_recon[:, -self.num_continuous:]))
+        t_loglik = t_dist.log_prob(X[:, -self.num_continuous:]).sum()
+
+        reconstruct_loss = -(categoric_loglik + t_loglik)
 
         elbo = reconstruct_loss
 
-        return (elbo, reconstruct_loss, divergence_loss, categoric_loglik, gauss_loglik)
+        return (elbo, reconstruct_loss, divergence_loss, categoric_loglik, t_loglik)
 
 
     def train(self, 
@@ -180,6 +185,8 @@ class Encoder(nn.Module):
             print(f"Encoder: {device} specified, {self.device} used")
         output_dim = 2 * self.total_latent_dim
         print("Encoder output_dim: ", output_dim)
+        # self.lstm = nn.LSTM(input_dim, hidden_dim)
+        # self.linear = nn.Linear(hidden_dim, output_dim)
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             activation(),
@@ -187,6 +194,7 @@ class Encoder(nn.Module):
             activation(),
             nn.Linear(hidden_dim, output_dim),
         )
+
 
     def forward(self, x):
         outs = self.net(x)
@@ -229,6 +237,8 @@ class Decoder(nn.Module):
             activation(),
             nn.Linear(hidden_dim, output_dim),
         )
+        # self.lstm = nn.LSTM(self.total_latent_dim, hidden_dim)
+        # self.linear = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, z):
         return self.net(z)

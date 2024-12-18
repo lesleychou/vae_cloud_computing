@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.size'] = 54
 plt.rcParams["figure.figsize"] = (5,9)
 
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler
 
 
 def set_seed(seed):
@@ -85,6 +85,18 @@ def mimic_pre_proc(data_supp, original_continuous_columns, original_categorical_
             continuous_transformers[
                 "continuous_{}".format(column)
             ] = temp_continuous
+
+            transformed_dataset[column] = (
+                temp_continuous.transform(temp_column)
+            ).flatten()
+
+    elif pre_proc_method == "robust":
+        for index, column in enumerate(continuous_columns):
+            # Fit RobustScaler to each column
+            temp_continuous = RobustScaler()
+            temp_column = transformed_dataset[column].values.reshape(-1, 1)
+            temp_continuous.fit(temp_column)
+            continuous_transformers["continuous_{}".format(column)] = temp_continuous
 
             transformed_dataset[column] = (
                 temp_continuous.transform(temp_column)
@@ -200,6 +212,22 @@ def reverse_transformers(
                         -1, 1
                     )
                 ).flatten()
+        # reverse the robust scaling
+        elif pre_proc_method == "robust":
+            for transformer_name in cont_transformers:
+
+                transformer = cont_transformers[transformer_name]
+                column_name = transformer_name[11:]
+
+                # Reverse the robust scaling
+                synthetic_transformed_set[
+                    column_name
+                ] = transformer.inverse_transform(
+                    synthetic_transformed_set[column_name].values.reshape(
+                        -1, 1
+                    )
+                ).flatten()
+
 
     if date_transformers != None:
         for transformer_name in date_transformers:

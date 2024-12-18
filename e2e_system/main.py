@@ -56,9 +56,9 @@ def read_data(input_data_filepath, output_data_path):
 
     original_continuous_columns = list(set(input_df.columns.values.tolist()) - set(original_categorical_columns))
     # # scale all continuous value with int log
-    # for column in original_continuous_columns:
-    #     input_df[column] = np.log1p(input_df[column])
-    # input_df = input_df.round(0)
+    for column in original_continuous_columns:
+        input_df[column] = np.log1p(input_df[column])
+    input_df = input_df.round(0)
     input_df.to_csv(output_data_path, index=False)
 
     return input_df, original_continuous_columns, original_categorical_columns
@@ -249,13 +249,11 @@ def main(config):
     print("Continuous columns: ", original_continuous_columns)
     print("Categorical columns: ", original_categorical_columns)
 
-    bn_structure = build_bayesian_network(config.output_processed_data_path, original_categorical_columns, degree_of_bayesian_network=2, epsilon=2)
-    print("Bayesian network structure: ", bn_structure)
+    # bn_structure = build_bayesian_network(config.output_processed_data_path, original_categorical_columns, degree_of_bayesian_network=2, epsilon=2)
+    # print("Bayesian network structure: ", bn_structure)
 
-    hierarchy_indices = calculate_latent_dim_hierarchy(bn_structure)
-    print(hierarchy_indices)
-
-    pre_proc_method = "GMM"
+    # hierarchy_indices = calculate_latent_dim_hierarchy(bn_structure)
+    # print(hierarchy_indices)
 
     (
         original_input_transformed,
@@ -268,7 +266,7 @@ def main(config):
     ) = mimic_pre_proc(train_df,
                        original_continuous_columns,
                        original_categorical_columns,
-                       pre_proc_method=pre_proc_method)
+                       pre_proc_method=config.pre_proc_method)
 
     X_train = original_input_transformed
     print("Input data shape: ", X_train.shape)

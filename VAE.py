@@ -28,13 +28,15 @@ class Encoder(nn.Module):
             print(f"Encoder: {device} specified, {self.device} used")
         output_dim = 2 * latent_dim
         self.latent_dim = latent_dim
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            activation(),
-            nn.Linear(hidden_dim, hidden_dim),
-            activation(),
-            nn.Linear(hidden_dim, output_dim),
-        )
+        self.lstm = nn.LSTM(input_dim, hidden_dim)
+        self.linear = nn.Linear(hidden_dim, output_dim)
+        # self.net = nn.Sequential(
+        #     nn.Linear(input_dim, hidden_dim),
+        #     activation(),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     activation(),
+        #     nn.Linear(hidden_dim, output_dim),
+        # )
 
     def forward(self, x):
         outs = self.net(x)
@@ -68,13 +70,16 @@ class Decoder(nn.Module):
             self.device = torch.device("cpu")
             print(f"Decoder: {device} specified, {self.device} used")
 
-        self.net = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            activation(),
-            nn.Linear(hidden_dim, hidden_dim),
-            activation(),
-            nn.Linear(hidden_dim, output_dim),
-        )
+        # self.net = nn.Sequential(
+        #     nn.Linear(latent_dim, hidden_dim),
+        #     activation(),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     activation(),
+        #     nn.Linear(hidden_dim, output_dim),
+        # )
+
+        self.lstm = nn.LSTM(latent_dim, hidden_dim)
+        self.linear = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, z):
         return self.net(z)
