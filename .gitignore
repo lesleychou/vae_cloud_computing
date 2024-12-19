@@ -5,3 +5,4 @@ e2e_system/saved_model/*
 e2e_system/syn_data/*
 e2e_system/data/all_data/vae_data_processed/*
 *.DS_Store
+e2e_system/data/toy_data/toy_syn_data.csv
