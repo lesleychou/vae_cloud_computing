@@ -8,12 +8,12 @@ class Config():
 
     def __init__(self):
         self.project_dir = os.path.dirname(os.path.abspath(__file__))
-        self.pre_proc_method = "standard"
+        self.pre_proc_method = "none"
         # General training hyperparams
-        self.batch_size = 1
+        self.batch_size = 100
         self.latent_dim = 12
         self.hidden_dim = 1024
-        self.n_epochs = 50
+        self.n_epochs = 20
         self.logging_freq = 1  # Number of epochs we should log the results to the user
         self.patience = 50  # How many epochs should we allow the model train to see if
         # improvement is made

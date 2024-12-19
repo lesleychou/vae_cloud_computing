@@ -102,6 +102,9 @@ def mimic_pre_proc(data_supp, original_continuous_columns, original_categorical_
                 temp_continuous.transform(temp_column)
             ).flatten()
 
+    elif pre_proc_method == "none":
+        pass
+
     num_categories = []
 
     for col in categorical_columns:
@@ -227,6 +230,9 @@ def reverse_transformers(
                         -1, 1
                     )
                 ).flatten()
+                
+        elif pre_proc_method == "none":
+            pass
 
 
     if date_transformers != None:
