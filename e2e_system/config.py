@@ -4,6 +4,8 @@ import torch
 class Config():
     """
     VAE model training configs
+    batch_size is the most important hyperparameter to tune. for synthetic data, batch_size=10 is good.
+    for synthetic data, pre_proc_emthod does not matter much.
     """
 
     def __init__(self):
