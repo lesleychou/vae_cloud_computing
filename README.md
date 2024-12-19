@@ -35,5 +35,7 @@ To evaluate the accuracy of generated synthetic data, run `e2e_system/Eval_query
 ### Your task and goal
 Please tune the VAE model (feel free to change hyperparameters, VAE model structure, or/and data processing function), so that the query results can reach the accuracy we want in `e2e_system/Eval_query.py`. 
 
+### All data link
+https://drive.google.com/file/d/1LZhlNDxDfI6H0bNY2tIDD0wImAe6bzT4/view?usp=drive_link
 
 
