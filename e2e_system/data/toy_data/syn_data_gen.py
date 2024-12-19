@@ -33,11 +33,13 @@ np.random.seed(0)
 syn_df = create_df(n_cont=2, n_cat=1, num_samples=10000)
 syn_df.to_csv('toy_syn_data.csv', index=False)
 
+# read the data
+syn_df_vae = pd.read_csv('../../syn_data/toy_syn_data.csv')
 # plot a big figure, each column is a subplot
-fig, axes = plt.subplots(nrows=1, ncols=syn_df.shape[1], figsize=(20, 5))
+fig, axes = plt.subplots(nrows=1, ncols=syn_df_vae.shape[1], figsize=(20, 5))
 
-for i, col in enumerate(syn_df.columns):
-    axes[i].hist(syn_df[col], bins=50, color='blue', alpha=0.7)
+for i, col in enumerate(syn_df_vae.columns):
+    axes[i].hist(syn_df_vae[col], bins=50, color='blue', alpha=0.7)
     axes[i].set_title(col)
 
 plt.tight_layout()

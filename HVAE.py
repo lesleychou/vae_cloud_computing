@@ -13,7 +13,7 @@ import pandas as pd
 
 
 class HierarchicalVAE(nn.Module):
-    def __init__(self, encoder, decoder, latent_dim_hierarchy, lr=1e-4):
+    def __init__(self, encoder, decoder, latent_dim_hierarchy, lr=1e-3):
         super().__init__()
         self.encoder = encoder.to(encoder.device)
         self.decoder = decoder.to(decoder.device)
@@ -84,25 +84,25 @@ class HierarchicalVAE(nn.Module):
                 ).sum()
                 i = i + self.decoder.num_categories[v]
 
-        # gauss_loglik = (
-        #     Normal(
-        #         loc=x_recon[:, -self.num_continuous:],
-        #         scale=torch.ones_like(x_recon[:, -self.num_continuous:]),
-        #     )
-        #     .log_prob(X[:, -self.num_continuous:])
-        #     .sum()
-        # )
+        gauss_loglik = (
+            Normal(
+                loc=x_recon[:, -self.num_continuous:],
+                scale=torch.ones_like(x_recon[:, -self.num_continuous:]),
+            )
+            .log_prob(X[:, -self.num_continuous:])
+            .sum()
+        )
 
         # Use StudentT for heavy-tailed reconstruction
-        df = 3.0  # Degrees of freedom (lower = heavier tails, >2 ensures finite variance)
-        t_dist = StudentT(df, loc=x_recon[:, -self.num_continuous:], scale=torch.ones_like(x_recon[:, -self.num_continuous:]))
-        t_loglik = t_dist.log_prob(X[:, -self.num_continuous:]).sum()
+        # df = 3.0  # Degrees of freedom (lower = heavier tails, >2 ensures finite variance)
+        # t_dist = StudentT(df, loc=x_recon[:, -self.num_continuous:], scale=torch.ones_like(x_recon[:, -self.num_continuous:]))
+        # t_loglik = t_dist.log_prob(X[:, -self.num_continuous:]).sum()
 
-        reconstruct_loss = -(categoric_loglik + t_loglik)
+        reconstruct_loss = -(categoric_loglik + gauss_loglik)
 
         elbo = reconstruct_loss
 
-        return (elbo, reconstruct_loss, divergence_loss, categoric_loglik, t_loglik)
+        return (elbo, reconstruct_loss, divergence_loss, categoric_loglik, gauss_loglik)
 
 
     def train(self, 
@@ -150,6 +150,8 @@ class HierarchicalVAE(nn.Module):
                 print(
                     f"\tEpoch: {epoch:2}. Elbo: {train_loss:11.2f}. Reconstruction Loss: {reconstruction_epoch_loss:11.2f}. Categorical Loss: {categorical_epoch_reconstruct:11.2f}. Numerical Loss: {numerical_epoch_reconstruct:11.2f}"
                 )
+
+            # visualize the reconstruction loss
 
             # # Optionally: Describe dataset with hierarchical latent variables
             # if filepath:

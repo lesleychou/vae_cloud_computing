@@ -56,9 +56,9 @@ def read_data(input_data_filepath, output_data_path):
 
     original_continuous_columns = list(set(input_df.columns.values.tolist()) - set(original_categorical_columns))
     # # scale all continuous value with int log
-    for column in original_continuous_columns:
-        input_df[column] = np.log1p(input_df[column])
-    input_df = input_df.round(0)
+    # for column in original_continuous_columns:
+    #     input_df[column] = np.log1p(input_df[column])
+    # input_df = input_df.round(0)
     input_df.to_csv(output_data_path, index=False)
 
     return input_df, original_continuous_columns, original_categorical_columns
